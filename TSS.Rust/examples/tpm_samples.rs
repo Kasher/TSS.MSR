@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+﻿use std::io::{self, Write};
 use tss_rust::{
     auth_session::Session,
     crypto::Crypto,
@@ -12,24 +12,26 @@ lazy_static::lazy_static! {
 }
 
 fn set_color(color: u8) {
-    // This function simulates setting text color. In a real application, you can use libraries like `termcolor` or `colored`.
-    // This is just a placeholder since color setting is typically platform-dependent (like ANSI codes on Linux/macOS).
     if color == 0 {
-        print!("\x1b[0m"); // Reset color (for simplicity, this is just a reset for terminal color)
+        print!("\x1b[0m");
     } else {
-        print!("\x1b[1;32m"); // Green color (for example, setting to green)
+        print!("\x1b[1;32m"); // Green
     }
 }
 
+fn print_error(msg: &str) {
+    eprintln!("\x1b[1;31m{}\x1b[0m", msg);
+}
+
 fn announce(test_name: &str) {
-    set_color(1); // Reset color (probably to default)
+    set_color(1);
     println!();
     println!("==============================================================================================================================");
-    println!("               {}", test_name);
+    println!("             {}", test_name);
     println!("==============================================================================================================================");
     println!();
-    io::stdout().flush().unwrap(); // Ensure everything is printed out
-    set_color(0); // Set color (e.g., green)
+    io::stdout().flush().unwrap();
+    set_color(0);
 }
 
 fn get_capabilities(tpm: &mut Tpm2) -> Result<(), Box<dyn std::error::Error>> {
@@ -229,8 +231,8 @@ fn attestation(tpm: &mut Tpm2) -> Result<(), TpmError> {
     
     if let Some(TPMU_ATTEST::quote(quote_attest)) = attested {
         println!("PCR Quote obtained successfully");
-        println!("  PCR Quote: {:?}", quote_attest);
-        println!("  Nonce: {:?}", quote.quoted.extraData);
+        println!("PCR Quote: {:?}", quote_attest);
+        println!("Nonce: {:?}", quote.quoted.extraData);
     } else {
         println!("Failed to cast to quote attestation");
         return Err(TpmError::InvalidParameter);
@@ -244,12 +246,12 @@ fn attestation(tpm: &mut Tpm2) -> Result<(), TpmError> {
     if let Some(TPMU_ATTEST::time(time_attest)) = time_quote.timeInfo.attested {
         println!("Time Quote obtained successfully");
         let clock_info = time_attest.time.clockInfo;
-        println!("   Firmware Version: {}", time_attest.firmwareVersion);
-        println!("   Time: {}", time_attest.time.time);
-        println!("   Clock: {}", clock_info.clock);
-        println!("   ResetCount: {}", clock_info.resetCount);
-        println!("   RestartCount: {}", clock_info.restartCount);
-        println!("   Nonce: {:?}", time_quote.timeInfo.extraData);
+        println!(" Firmware Version: {}", time_attest.firmwareVersion);
+        println!(" Time: {}", time_attest.time.time);
+        println!(" Clock: {}", clock_info.clock);
+        println!(" ResetCount: {}", clock_info.resetCount);
+        println!(" RestartCount: {}", clock_info.restartCount);
+        println!(" Nonce: {:?}", time_quote.timeInfo.extraData);
     } else {
         println!("Failed to cast to quote attestation");
         return Err(TpmError::InvalidParameter);
@@ -263,10 +265,10 @@ fn attestation(tpm: &mut Tpm2) -> Result<(), TpmError> {
 
     if let Some(TPMU_ATTEST::certify(certify_attest)) = &key_quote.certifyInfo.attested {
         println!("Key certification obtained successfully");
-        println!("   Name of certified key: {:?}", certify_attest.name);
-        println!("   Qualified name of certified key: {:?}", certify_attest.qualifiedName);
-        println!("   nonce: {:?}", &key_quote.certifyInfo.extraData);
-        println!("   Signature: {:?}", &key_quote.signature);
+        println!(" Name of certified key: {:?}", certify_attest.name);
+        println!(" Qualified name of certified key: {:?}", certify_attest.qualifiedName);
+        println!(" nonce: {:?}", &key_quote.certifyInfo.extraData);
+        println!(" Signature: {:?}", &key_quote.signature);
     } else {
         println!("Failed to cast to quote attestation");
         return Err(TpmError::InvalidParameter);
@@ -275,9 +277,9 @@ fn attestation(tpm: &mut Tpm2) -> Result<(), TpmError> {
     let pub_key = tpm.ReadPublic(&sig_key)?;
 
     if (pub_key.outPublic.validate_certify(&pub_key.outPublic, &key_nonce, &key_quote)?) {
-        println!("Key certification signature verification SUCCESSFUL! ✅");
+        println!("Key certification signature verification SUCCESSFUL! ");
     } else {
-        println!("Key certification signature verification FAILED! ❌");
+        println!("Key certification signature verification FAILED! ");
     }
 
     // // Clean up - flush keys from TPM
@@ -314,9 +316,9 @@ fn activate_credentials(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Secret recovered from Activate: {:?}", recovered_secret);
 
     if secret != recovered_secret {
-        println!("⚠️  Secret mismatch when using TSS.Rust to create an activation credential (known create_activation issue)");
+        print_error("Secret mismatch when using TSS.Rust to create an activation credential (known create_activation issue)");
     } else {
-        println!("✅ TSS.Rust-created activation blob verified");
+        println!("TSS.Rust-created activation blob verified");
     }
 
     // You can also use the TPM to make the activation credential
@@ -353,7 +355,7 @@ fn rand_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Random bytes (second call): {:?}", rand2);
 
     assert_ne!(rand, rand2, "Two random calls should produce different results");
-    println!("✅ Random number generation works correctly");
+    println!("Random number generation works correctly");
 
     Ok(())
 }
@@ -384,7 +386,7 @@ fn hash_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Sequence hash result:  {:?}", seq_result.result);
     assert_eq!(hash_resp.outHash, seq_result.result,
         "Single-shot and sequence hash should match");
-    println!("✅ Single-shot and sequence hash results match!");
+    println!("Single-shot and sequence hash results match!");
 
     Ok(())
 }
@@ -432,7 +434,7 @@ fn hmac_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("HMAC (direct):     {:?}", hmac_direct);
 
     assert_eq!(hmac_result.result, hmac_direct, "Sequence and direct HMAC should match");
-    println!("✅ Sequence and direct HMAC results match!");
+    println!("Sequence and direct HMAC results match!");
 
     tpm.FlushContext(&hmac_key_resp.handle)?;
     Ok(())
@@ -476,7 +478,7 @@ fn pcr_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     let pcr_vals_final = tpm.PCR_Read(&pcr_selection)?;
     println!("PCR 16 after final reset: {:?}", pcr_vals_final.pcrValues);
 
-    println!("✅ PCR operations completed successfully");
+    println!("PCR operations completed successfully");
     Ok(())
 }
 
@@ -542,7 +544,7 @@ fn primary_keys_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     // Read back the public part from the persistent handle
     let pub_data = tpm.ReadPublic(&persistent_handle)?;
     println!("Read back public data from persistent handle");
-    println!("  Algorithm: {:?}", pub_data.outPublic.nameAlg);
+    println!("Algorithm: {:?}", pub_data.outPublic.nameAlg);
 
     // Clean up - remove persistent key
     tpm.EvictControl(
@@ -553,7 +555,7 @@ fn primary_keys_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Removed persistent key");
 
     tpm.FlushContext(&new_primary.handle)?;
-    println!("✅ Primary keys sample completed successfully");
+    println!("Primary keys sample completed successfully");
     Ok(())
 }
 
@@ -603,7 +605,7 @@ fn child_keys_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 
     tpm.FlushContext(&restored_key)?;
     tpm.FlushContext(&primary)?;
-    println!("✅ Child keys sample completed successfully");
+    println!("Child keys sample completed successfully");
     Ok(())
 }
 
@@ -612,13 +614,13 @@ fn counter_timer_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 
     let time_info = tpm.ReadClock()?;
     println!("TPM Clock Information:");
-    println!("  Time (ms since last reset): {}", time_info.time);
-    println!("  Clock (ms total):           {}", time_info.clockInfo.clock);
-    println!("  Reset count:                {}", time_info.clockInfo.resetCount);
-    println!("  Restart count:              {}", time_info.clockInfo.restartCount);
-    println!("  Safe:                       {}", time_info.clockInfo.safe);
+    println!("Time (ms since last reset): {}", time_info.time);
+    println!("Clock (ms total):           {}", time_info.clockInfo.clock);
+    println!("Reset count:                {}", time_info.clockInfo.resetCount);
+    println!("Restart count:              {}", time_info.clockInfo.restartCount);
+    println!("Safe:                       {}", time_info.clockInfo.safe);
 
-    println!("✅ Counter/Timer sample completed successfully");
+    println!("Counter/Timer sample completed successfully");
     Ok(())
 }
 
@@ -656,7 +658,7 @@ fn nv_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     let read_data = tpm.NV_Read(&nv_index, &nv_index, nv_data_size, 0)?;
     println!("Read back: {:?}", read_data);
     assert_eq!(write_data, read_data, "NV read should match write");
-    println!("✅ NV read matches write");
+    println!("NV read matches write");
 
     // Read public info
     let nv_pub_info = tpm.NV_ReadPublic(&nv_index)?;
@@ -693,7 +695,7 @@ fn nv_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Counter after second increment: {:?}", counter_val2);
 
     tpm.NV_UndefineSpace(&owner, &counter_index)?;
-    println!("✅ Counter NV works correctly");
+    println!("Counter NV works correctly");
 
     // ---- Bit field NV ----
     println!("\n>> Bit Field NV");
@@ -721,7 +723,7 @@ fn nv_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Bits after setting bit 2: {:?}", bits_val2);
 
     tpm.NV_UndefineSpace(&owner, &bit_index)?;
-    println!("✅ Bit field NV works correctly");
+    println!("Bit field NV works correctly");
 
     // ---- Extend NV ----
     println!("\n>> Extend NV");
@@ -745,7 +747,7 @@ fn nv_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Extend NV after extend: {:?}", extend_val);
 
     tpm.NV_UndefineSpace(&owner, &extend_index)?;
-    println!("✅ Extend NV works correctly");
+    println!("Extend NV works correctly");
 
     Ok(())
 }
@@ -753,7 +755,7 @@ fn nv_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 fn rsa_encrypt_decrypt_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     announce("RSA Encrypt/Decrypt Sample");
 
-    // Create an RSA decryption key (not restricted — for general encrypt/decrypt)
+    // Create an RSA decryption key (not restricted - for general encrypt/decrypt)
     let rsa_attrs = TPMA_OBJECT::decrypt
         | TPMA_OBJECT::fixedParent | TPMA_OBJECT::fixedTPM
         | TPMA_OBJECT::sensitiveDataOrigin | TPMA_OBJECT::userWithAuth;
@@ -792,7 +794,7 @@ fn rsa_encrypt_decrypt_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Decrypted: {:?}", String::from_utf8_lossy(&decrypted));
 
     assert_eq!(plaintext, decrypted, "Decrypted data should match original");
-    println!("✅ RSA encrypt/decrypt works correctly");
+    println!("RSA encrypt/decrypt works correctly");
 
     tpm.FlushContext(&key_resp.handle)?;
     Ok(())
@@ -840,7 +842,7 @@ fn encrypt_decrypt_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Decrypted: {:?}", String::from_utf8_lossy(&decrypted.outData));
 
     assert_eq!(plaintext, decrypted.outData, "Decrypted data should match original");
-    println!("✅ AES encrypt/decrypt works correctly");
+    println!("AES encrypt/decrypt works correctly");
 
     tpm.FlushContext(&aes_handle)?;
     tpm.FlushContext(&primary)?;
@@ -941,7 +943,7 @@ fn auth_sessions_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&loaded_key)?;
     tpm.FlushContext(&primary)?;
 
-    println!("✅ Auth sessions sample completed successfully");
+    println!("Auth sessions sample completed successfully");
     Ok(())
 }
 
@@ -961,7 +963,7 @@ fn dictionary_attack_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Set DA parameters: maxTries={}, recoveryTime={}, lockoutRecovery={}",
              new_max_tries, new_recovery_time, lockout_recovery);
 
-    println!("✅ Dictionary attack sample completed successfully");
+    println!("Dictionary attack sample completed successfully");
     Ok(())
 }
 
@@ -1003,7 +1005,7 @@ fn misc_admin_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.ClockRateAdjust(&TPM_HANDLE::new(TPM_RH::OWNER.get_value()), TPM_CLOCK_ADJUST::MEDIUM_FASTER)?;
     println!("Clock rate adjusted (slower, then faster)");
 
-    println!("✅ Misc admin sample completed successfully");
+    println!("Misc admin sample completed successfully");
     Ok(())
 }
 
@@ -1052,7 +1054,7 @@ fn policy_simplest_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&session_handle(&sess2))?;
     tpm.FlushContext(&hmac_key)?;
 
-    println!("✅ Policy simplest sample completed successfully");
+    println!("Policy simplest sample completed successfully");
     Ok(())
 }
 
@@ -1160,7 +1162,7 @@ fn unseal_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&sealed_key)?;
     tpm.FlushContext(&primary)?;
 
-    println!("✅ Unseal sample completed successfully");
+    println!("Unseal sample completed successfully");
     Ok(())
 }
 
@@ -1242,7 +1244,7 @@ fn policy_or_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 
     tpm.FlushContext(&hmac_key)?;
 
-    println!("✅ PolicyOR sample completed successfully");
+    println!("PolicyOR sample completed successfully");
     Ok(())
 }
 
@@ -1325,7 +1327,7 @@ fn policy_with_passwords_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&session_handle(&sess4))?;
     tpm.FlushContext(&hmac_handle2)?;
 
-    println!("✅ Policy with passwords sample completed successfully");
+    println!("Policy with passwords sample completed successfully");
     Ok(())
 }
 
@@ -1368,6 +1370,7 @@ fn import_duplicate_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 
     let null_parent = TPM_HANDLE::new(TPM_RH::NULL.get_value());
     let no_sym = TPMT_SYM_DEF_OBJECT::default();
+    println!("About to call Duplicate...");
     let dup_result = tpm.with_session(sess.clone()).Duplicate(
         &sign_key, &null_parent, &vec![], &no_sym)?;
     println!("Duplicated key successfully");
@@ -1390,7 +1393,7 @@ fn import_duplicate_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&imported_key)?;
     tpm.FlushContext(&primary)?;
 
-    println!("✅ Import/Duplicate sample completed successfully");
+    println!("Import/Duplicate sample completed successfully");
     Ok(())
 }
 
@@ -1435,12 +1438,12 @@ fn policy_counter_timer_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
                 &TPM_HANDLE::new(TPM_RH::OWNER.get_value()),
                 &policy_digest, TPM_ALG_ID::SHA256);
             if tpm.last_response_code() == TPM_RC::SUCCESS {
-                println!("  Iteration {}: Succeeded", i);
+                println!("Iteration {}: Succeeded", i);
             } else {
-                println!("  Iteration {}: Policy valid but command failed (rc={})", i, tpm.last_response_code());
+                println!("Iteration {}: Policy valid but command failed (rc={})", i, tpm.last_response_code());
             }
         } else {
-            println!("  Iteration {}: Policy expired (rc={})", i, tpm.last_response_code());
+            println!("Iteration {}: Policy expired (rc={})", i, tpm.last_response_code());
         }
         tpm.FlushContext(&session_handle(&sess))?;
         std::thread::sleep(std::time::Duration::from_millis(1500));
@@ -1450,7 +1453,7 @@ fn policy_counter_timer_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.SetPrimaryPolicy(&TPM_HANDLE::new(TPM_RH::OWNER.get_value()),
                           &vec![], TPM_ALG_ID::NULL)?;
 
-    println!("✅ PolicyCounterTimer sample completed successfully");
+    println!("PolicyCounterTimer sample completed successfully");
     Ok(())
 }
 
@@ -1487,7 +1490,7 @@ fn policy_secret_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&session_handle(&sess))?;
     tpm.FlushContext(&hmac_key)?;
 
-    println!("✅ PolicySecret sample completed successfully");
+    println!("PolicySecret sample completed successfully");
     Ok(())
 }
 
@@ -1567,7 +1570,7 @@ fn policy_nv_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&hmac_key)?;
     tpm.NV_UndefineSpace(&TPM_HANDLE::new(TPM_RH::OWNER.get_value()), &nv_handle)?;
 
-    println!("✅ PolicyNV sample completed successfully");
+    println!("PolicyNV sample completed successfully");
     Ok(())
 }
 
@@ -1646,7 +1649,7 @@ fn software_keys_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&re_key)?;
     tpm.FlushContext(&primary)?;
 
-    println!("✅ Software keys sample completed successfully");
+    println!("Software keys sample completed successfully");
     Ok(())
 }
 
@@ -1696,7 +1699,7 @@ fn policy_pcr_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 
     tpm.FlushContext(&hmac_key)?;
 
-    println!("✅ Policy PCR sample completed successfully");
+    println!("Policy PCR sample completed successfully");
     Ok(())
 }
 
@@ -1734,7 +1737,7 @@ fn policy_cphash_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("PolicyCpHash + PolicyCommandCode trial digest: {:?}", &combined_digest[..8]);
     println!("(Demonstrates policy digest computation - cpHash restricts to specific parameters)");
 
-    println!("✅ PolicyCpHash sample completed successfully");
+    println!("PolicyCpHash sample completed successfully");
     Ok(())
 }
 
@@ -1772,7 +1775,7 @@ fn policy_name_hash_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("PolicyNameHash + PolicyCommandCode trial digest: {:?}", &combined_digest[..8]);
     println!("(Demonstrates policy that restricts HierarchyChangeAuth to OWNER handle only)");
 
-    println!("✅ PolicyNameHash sample completed successfully");
+    println!("PolicyNameHash sample completed successfully");
     Ok(())
 }
 
@@ -1839,7 +1842,7 @@ fn rewrap_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&dup_key)?;
     tpm.FlushContext(&new_parent)?;
 
-    println!("✅ ReWrap sample completed successfully");
+    println!("ReWrap sample completed successfully");
     Ok(())
 }
 
@@ -1926,7 +1929,7 @@ fn audit_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&session_handle(&sess))?;
     tpm.FlushContext(&sig_key)?;
 
-    println!("✅ Audit sample completed successfully");
+    println!("Audit sample completed successfully");
     Ok(())
 }
 
@@ -1960,7 +1963,7 @@ fn policy_locality_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 
     tpm.FlushContext(&hmac_key)?;
 
-    println!("✅ PolicyLocality sample completed (trial only on TBS)");
+    println!("PolicyLocality sample completed (trial only on TBS)");
     Ok(())
 }
 
@@ -2020,7 +2023,7 @@ fn async_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Asynchronously created primary key: handle={:?}", new_primary.handle);
     tpm.FlushContext(&new_primary.handle)?;
 
-    println!("✅ Async sample completed successfully");
+    println!("Async sample completed successfully");
     Ok(())
 }
 
@@ -2067,7 +2070,7 @@ fn session_encryption_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
         TPMT_SYM_DEF::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
     )?;
 
-    // ReadPublic with encrypted response — the library should decrypt automatically
+    // ReadPublic with encrypted response - the library should decrypt automatically
     let encrypted_read = tpm.with_session(enc_sess.clone()).ReadPublic(&storage_primary)?;
     let enc_sess = tpm.last_session().unwrap();
 
@@ -2083,7 +2086,7 @@ fn session_encryption_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&session_handle(&enc_sess))?;
     tpm.FlushContext(&storage_primary)?;
 
-    println!("✅ SessionEncryption sample completed successfully");
+    println!("SessionEncryption sample completed successfully");
     Ok(())
 }
 
@@ -2187,7 +2190,7 @@ fn policy_signed_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&session_handle(&policy_sess))?;
     tpm.FlushContext(&auth_key_handle)?;
 
-    println!("✅ PolicySigned sample completed successfully");
+    println!("PolicySigned sample completed successfully");
     Ok(())
 }
 
@@ -2294,7 +2297,7 @@ fn policy_authorize_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&session_handle(&policy_sess))?;
     tpm.FlushContext(&auth_key_handle)?;
 
-    println!("✅ PolicyAuthorize sample completed successfully");
+    println!("PolicyAuthorize sample completed successfully");
     Ok(())
 }
 
@@ -2354,7 +2357,7 @@ fn admin_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
         Err(e) => println!("Primary key determinism test skipped ({})", e),
     }
 
-    println!("✅ Admin sample completed successfully");
+    println!("Admin sample completed successfully");
     Ok(())
 }
 
@@ -2382,7 +2385,7 @@ fn policy_tree_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&session_handle(&trial))?;
 
     assert_eq!(sw_digest, tpm_digest, "PolicyCommandCode: SW vs TPM digest mismatch");
-    println!("PolicyTree digest (PolicyCommandCode) matches TPM trial: ✅");
+    println!("PolicyTree digest (PolicyCommandCode) matches TPM trial: ");
 
     // -----------------------------------------------------------------------
     // 2) PolicyTree with multiple assertions chained
@@ -2400,7 +2403,7 @@ fn policy_tree_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&session_handle(&trial2))?;
 
     assert_eq!(sw_digest2, tpm_digest2, "Chained policy: SW vs TPM digest mismatch");
-    println!("PolicyTree digest (Locality + CommandCode) matches TPM trial: ✅");
+    println!("PolicyTree digest (Locality + CommandCode) matches TPM trial: ");
 
     // -----------------------------------------------------------------------
     // 3) PolicyOR via PolicyTree
@@ -2441,7 +2444,7 @@ fn policy_tree_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&session_handle(&trial_or))?;
 
     assert_eq!(sw_or_digest, tpm_or_digest, "PolicyOR: SW vs TPM digest mismatch");
-    println!("PolicyTree digest (PolicyOR) matches TPM trial: ✅");
+    println!("PolicyTree digest (PolicyOR) matches TPM trial: ");
 
     // -----------------------------------------------------------------------
     // 4) Execute a PolicyTree against a real policy session
@@ -2454,7 +2457,7 @@ fn policy_tree_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     let policy_sess = tree.execute(tpm, policy_sess)?;
 
     let hmac_seq = tpm.with_session(policy_sess.clone()).HMAC_Start(&hmac_key, &vec![], hash_alg)?;
-    println!("PolicyTree execute succeeded — HMAC_Start handle: {:?}", hmac_seq);
+    println!("PolicyTree execute succeeded - HMAC_Start handle: {:?}", hmac_seq);
     tpm.FlushContext(&hmac_seq)?;
     tpm.FlushContext(&session_handle(&policy_sess))?;
     tpm.FlushContext(&hmac_key)?;
@@ -2473,9 +2476,9 @@ fn policy_tree_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&session_handle(&trial_pw))?;
 
     assert_eq!(pw_digest, tpm_pw_digest, "PolicyPassword: SW vs TPM digest mismatch");
-    println!("PolicyTree digest (PolicyPassword) matches TPM trial: ✅");
+    println!("PolicyTree digest (PolicyPassword) matches TPM trial: ");
 
-    println!("✅ PolicyTree sample completed successfully");
+    println!("PolicyTree sample completed successfully");
     Ok(())
 }
 
@@ -2539,7 +2542,7 @@ fn seeded_session_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&session_handle(&sess))?;
     tpm.FlushContext(&salt_key)?;
 
-    println!("✅ SeededSession sample completed successfully");
+    println!("SeededSession sample completed successfully");
     Ok(())
 }
 
@@ -2611,7 +2614,7 @@ fn bound_session_inner(tpm: &mut Tpm2, owner_auth: &[u8]) -> Result<(), TpmError
     nv_handle_with_auth.auth_value = nv_auth.clone();
     nv_handle_with_auth.set_name(&nv_info.nvName)?;
 
-    // Write to NV using the bound session (different entity — the NV index)
+    // Write to NV using the bound session (different entity - the NV index)
     tpm.with_session(sess.clone()).NV_Write(
         &nv_handle_with_auth, &nv_handle_with_auth, &vec![0, 1, 2, 3], 0,
     )?;
@@ -2631,29 +2634,22 @@ fn bound_session_inner(tpm: &mut Tpm2, owner_auth: &[u8]) -> Result<(), TpmError
     let _ = tpm.NV_UndefineSpace(&TPM_HANDLE::new(TPM_RH::OWNER.get_value()), &nv_handle);
     tpm.FlushContext(&session_handle(&sess))?;
 
-    println!("✅ BoundSession sample completed successfully");
+    println!("BoundSession sample completed successfully");
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Example usage of the TSS.Rust library
-    let mut device = Box::new(TpmTbsDevice::new());
-    device.connect()?;
-    let mut tpm = create_tpm_with_device(device);
-
-    // Try to reset dictionary attack lockout at startup
+fn reset_da_lockout(tpm: &mut Tpm2) {
     tpm.allow_errors();
     let _ = tpm.DictionaryAttackLockReset(&TPM_HANDLE::new(TPM_RH::LOCKOUT.get_value()));
     if tpm.last_response_code() != TPM_RC::SUCCESS {
-        // Query DA state to show recovery info
         if let Ok(da_info) = tpm.GetCapability(TPM_CAP::TPM_PROPERTIES, TPM_PT::LOCKOUT_COUNTER.get_value(), 4) {
             if let Some(TPMU_CAPABILITIES::tpmProperties(props)) = &da_info.capabilityData {
                 for p in &props.tpmProperty {
                     match p.property {
-                        TPM_PT::LOCKOUT_COUNTER => println!("  DA failure count: {}", p.value),
-                        TPM_PT::LOCKOUT_INTERVAL => println!("  DA lockout interval: {} seconds", p.value),
-                        TPM_PT::LOCKOUT_RECOVERY => println!("  DA lockout recovery: {} seconds", p.value),
-                        TPM_PT::MAX_AUTH_FAIL => println!("  DA max auth fail: {}", p.value),
+                        TPM_PT::LOCKOUT_COUNTER => println!("DA failure count: {}", p.value),
+                        TPM_PT::LOCKOUT_INTERVAL => println!("DA lockout interval: {} seconds", p.value),
+                        TPM_PT::LOCKOUT_RECOVERY => println!("DA lockout recovery: {} seconds", p.value),
+                        TPM_PT::MAX_AUTH_FAIL => println!("DA max auth fail: {}", p.value),
                         _ => {}
                     }
                 }
@@ -2663,171 +2659,173 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("DA lockout cleared successfully");
     }
+}
 
-    // Try to recover endorsement hierarchy if auth was changed by a previous run
-    // Use PolicyNameHash(name(ENDORSEMENT)) policy session if one was set
-    {
-        let hash_alg = TPM_ALG_ID::SHA256;
-        let endorsement_name = TPM_HANDLE::new(TPM_RH::ENDORSEMENT.get_value()).get_name().unwrap_or_default();
-        let name_hash = Crypto::hash(hash_alg, &endorsement_name).unwrap_or_default();
-        
-        // Try to clear endorsement policy and auth using policy session
-        tpm.allow_errors();
-        if let Ok(sess) = tpm.start_auth_session(TPM_SE::POLICY, hash_alg) {
-            let _ = tpm.PolicyNameHash(&session_handle(&sess), &name_hash);
-            let _ = tpm.with_session(sess.clone()).HierarchyChangeAuth(
-                &TPM_HANDLE::new(TPM_RH::ENDORSEMENT.get_value()),
-                &vec![],
-            );
-            let _ = tpm.FlushContext(&session_handle(&sess));
-        }
-        // Reset policy
-        tpm.allow_errors();
-        let _ = tpm.SetPrimaryPolicy(
+fn recover_endorsement_hierarchy(tpm: &mut Tpm2) {
+    let hash_alg = TPM_ALG_ID::SHA256;
+    let endorsement_name = TPM_HANDLE::new(TPM_RH::ENDORSEMENT.get_value()).get_name().unwrap_or_default();
+    let name_hash = Crypto::hash(hash_alg, &endorsement_name).unwrap_or_default();
+
+    tpm.allow_errors();
+    if let Ok(sess) = tpm.start_auth_session(TPM_SE::POLICY, hash_alg) {
+        let _ = tpm.PolicyNameHash(&session_handle(&sess), &name_hash);
+        let _ = tpm.with_session(sess.clone()).HierarchyChangeAuth(
             &TPM_HANDLE::new(TPM_RH::ENDORSEMENT.get_value()),
             &vec![],
-            TPM_ALG_ID::NULL,
         );
+        let _ = tpm.FlushContext(&session_handle(&sess));
     }
+    tpm.allow_errors();
+    let _ = tpm.SetPrimaryPolicy(
+        &TPM_HANDLE::new(TPM_RH::ENDORSEMENT.get_value()),
+        &vec![],
+        TPM_ALG_ID::NULL,
+    );
+}
 
-    // Try to recover owner hierarchy if auth was changed by a previous run
-    {
-        // Try known auth values that samples might leave behind
-        let known_auths: Vec<Vec<u8>> = vec![
-            Crypto::hash(TPM_ALG_ID::SHA1, b"passw0rd").unwrap_or_default(),
-            vec![0, 2, 1, 3, 5, 6], // bound_session_sample
-        ];
-        for known_auth in &known_auths {
-            tpm.set_admin_auth(TPM_RH::OWNER, known_auth);
-            tpm.allow_errors();
-            let _ = tpm.HierarchyChangeAuth(&TPM_HANDLE::new(TPM_RH::OWNER.get_value()), &vec![]);
-            if tpm.last_response_code() == TPM_RC::SUCCESS {
-                println!("Recovered OWNER auth");
-                break;
-            }
+fn recover_owner_hierarchy(tpm: &mut Tpm2) {
+    let known_auths: Vec<Vec<u8>> = vec![
+        Crypto::hash(TPM_ALG_ID::SHA1, b"passw0rd").unwrap_or_default(),
+        vec![0, 2, 1, 3, 5, 6], // bound_session_sample
+    ];
+    for known_auth in &known_auths {
+        tpm.set_admin_auth(TPM_RH::OWNER, known_auth);
+        tpm.allow_errors();
+        let _ = tpm.HierarchyChangeAuth(&TPM_HANDLE::new(TPM_RH::OWNER.get_value()), &vec![]);
+        if tpm.last_response_code() == TPM_RC::SUCCESS {
+            println!("Recovered OWNER auth");
+            break;
         }
-        // Reset admin auth to empty regardless
-        tpm.set_admin_auth(TPM_RH::OWNER, &[]);
     }
+    tpm.set_admin_auth(TPM_RH::OWNER, &[]);
+}
 
-    // Run capabilities test
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut device = Box::new(TpmTbsDevice::new());
+    device.connect()?;
+    let mut tpm = create_tpm_with_device(device);
+
+    reset_da_lockout(&mut tpm);
+    recover_endorsement_hierarchy(&mut tpm);
+    recover_owner_hierarchy(&mut tpm);
+
     get_capabilities(&mut tpm)?;
 
     // ---- Samples ordered to match C++ RunAllSamples() ----
 
     rand_sample(&mut tpm)?;
     if let Err(e) = dictionary_attack_sample(&mut tpm) {
-        println!("⚠️  dictionary_attack_sample failed (TPM may be in lockout): {}", e);
+        print_error(&format!("dictionary_attack_sample failed (TPM may be in lockout): {}", e));
     }
     hash_sample(&mut tpm)?;
     if let Err(e) = hmac_sample(&mut tpm) {
-        println!("⚠️  hmac_sample failed (may be DA lockout): {}", e);
+        print_error(&format!("hmac_sample failed (may be DA lockout): {}", e));
     }
     pcr_sample(&mut tpm)?;
     if let Err(e) = policy_locality_sample(&mut tpm) {
-        println!("⚠️  policy_locality_sample failed: {}", e);
+        print_error(&format!("policy_locality_sample failed: {}", e));
     }
     // GetCapability already ran above
     if let Err(e) = nv_sample(&mut tpm) {
-        println!("⚠️  nv_sample failed: {}", e);
+        print_error(&format!("nv_sample failed: {}", e));
     }
     if let Err(e) = primary_keys_sample(&mut tpm) {
-        println!("⚠️  primary_keys_sample failed: {}", e);
+        print_error(&format!("primary_keys_sample failed: {}", e));
     }
     if let Err(e) = auth_sessions_sample(&mut tpm) {
-        println!("⚠️  auth_sessions_sample failed: {}", e);
+        print_error(&format!("auth_sessions_sample failed: {}", e));
     }
     if let Err(e) = async_sample(&mut tpm) {
-        println!("⚠️  async_sample failed: {}", e);
+        print_error(&format!("async_sample failed: {}", e));
     }
     if let Err(e) = policy_simplest_sample(&mut tpm) {
-        println!("⚠️  policy_simplest_sample failed: {}", e);
+        print_error(&format!("policy_simplest_sample failed: {}", e));
     }
     if let Err(e) = policy_pcr_sample(&mut tpm) {
-        println!("⚠️  policy_pcr_sample failed: {}", e);
+        print_error(&format!("policy_pcr_sample failed: {}", e));
     }
     if let Err(e) = child_keys_sample(&mut tpm) {
-        println!("⚠️  child_keys_sample failed (likely TBS-blocked ContextSave): {}", e);
+        print_error(&format!("child_keys_sample failed (likely TBS-blocked ContextSave): {}", e));
     }
     if let Err(e) = policy_or_sample(&mut tpm) {
-        println!("⚠️  policy_or_sample failed: {}", e);
+        print_error(&format!("policy_or_sample failed: {}", e));
     }
     counter_timer_sample(&mut tpm)?;
     if let Err(e) = attestation(&mut tpm) {
-        println!("⚠️  attestation failed: {}", e);
+        print_error(&format!("attestation failed: {}", e));
     }
     if let Err(e) = admin_sample(&mut tpm) {
-        println!("⚠️  admin_sample failed: {}", e);
+        print_error(&format!("admin_sample failed: {}", e));
     }
     if let Err(e) = policy_cphash_sample(&mut tpm) {
-        println!("⚠️  policy_cphash_sample failed: {}", e);
+        print_error(&format!("policy_cphash_sample failed: {}", e));
     }
     if let Err(e) = policy_counter_timer_sample(&mut tpm) {
-        println!("⚠️  policy_counter_timer_sample failed: {}", e);
+        print_error(&format!("policy_counter_timer_sample failed: {}", e));
     }
     if let Err(e) = policy_with_passwords_sample(&mut tpm) {
-        println!("⚠️  policy_with_passwords_sample failed: {}", e);
+        print_error(&format!("policy_with_passwords_sample failed: {}", e));
     }
     if let Err(e) = unseal_sample(&mut tpm) {
-        println!("⚠️  unseal_sample failed: {}", e);
+        print_error(&format!("unseal_sample failed: {}", e));
     }
-    // Serializer — N/A for Rust
+    // Serializer - N/A for Rust
     if let Err(e) = session_encryption_sample(&mut tpm) {
-        println!("⚠️  session_encryption_sample failed: {}", e);
+        print_error(&format!("session_encryption_sample failed: {}", e));
     }
     if let Err(e) = import_duplicate_sample(&mut tpm) {
-        println!("⚠️  import_duplicate_sample failed: {}", e);
+        print_error(&format!("import_duplicate_sample failed: {}", e));
     }
     if let Err(e) = misc_admin_sample(&mut tpm) {
-        println!("⚠️  misc_admin_sample failed: {}", e);
+        print_error(&format!("misc_admin_sample failed: {}", e));
     }
     if let Err(e) = rsa_encrypt_decrypt_sample(&mut tpm) {
-        println!("⚠️  rsa_encrypt_decrypt_sample failed: {}", e);
+        print_error(&format!("rsa_encrypt_decrypt_sample failed: {}", e));
     }
     if let Err(e) = audit_sample(&mut tpm) {
-        println!("⚠️  audit_sample failed: {}", e);
+        print_error(&format!("audit_sample failed: {}", e));
     }
     if let Err(e) = activate_credentials(&mut tpm) {
-        println!("⚠️  activate_credentials failed: {}", e);
+        print_error(&format!("activate_credentials failed: {}", e));
     }
     if let Err(e) = software_keys_sample(&mut tpm) {
-        println!("⚠️  software_keys_sample failed: {}", e);
+        print_error(&format!("software_keys_sample failed: {}", e));
     }
     if let Err(e) = policy_signed_sample(&mut tpm) {
-        println!("⚠️  policy_signed_sample failed: {}", e);
+        print_error(&format!("policy_signed_sample failed: {}", e));
     }
     if let Err(e) = policy_authorize_sample(&mut tpm) {
-        println!("⚠️  policy_authorize_sample failed: {}", e);
+        print_error(&format!("policy_authorize_sample failed: {}", e));
     }
     if let Err(e) = policy_secret_sample(&mut tpm) {
-        println!("⚠️  policy_secret_sample failed: {}", e);
+        print_error(&format!("policy_secret_sample failed: {}", e));
     }
     if let Err(e) = encrypt_decrypt_sample(&mut tpm) {
-        println!("⚠️  encrypt_decrypt_sample failed (likely TBS-blocked EncryptDecrypt): {}", e);
+        print_error(&format!("encrypt_decrypt_sample failed (likely TBS-blocked EncryptDecrypt): {}", e));
     }
     if let Err(e) = policy_with_passwords_sample(&mut tpm) {
-        println!("⚠️  policy_with_passwords_sample (2nd run) failed: {}", e);
+        print_error(&format!("policy_with_passwords_sample (2nd run) failed: {}", e));
     }
-    // SeededSession — not yet implemented (needs RSA-encrypt salt)
+    // SeededSession - not yet implemented (needs RSA-encrypt salt)
     if let Err(e) = policy_nv_sample(&mut tpm) {
-        println!("⚠️  policy_nv_sample failed: {}", e);
+        print_error(&format!("policy_nv_sample failed: {}", e));
     }
     if let Err(e) = policy_name_hash_sample(&mut tpm) {
-        println!("⚠️  policy_name_hash_sample failed: {}", e);
+        print_error(&format!("policy_name_hash_sample failed: {}", e));
     }
     if let Err(e) = rewrap_sample(&mut tpm) {
-        println!("⚠️  rewrap_sample failed: {}", e);
+        print_error(&format!("rewrap_sample failed: {}", e));
     }
     if let Err(e) = policy_tree_sample(&mut tpm) {
-        println!("⚠️  policy_tree_sample failed: {}", e);
+        print_error(&format!("policy_tree_sample failed: {}", e));
     }
     if let Err(e) = seeded_session_sample(&mut tpm) {
-        println!("⚠️  seeded_session_sample failed: {}", e);
+        print_error(&format!("seeded_session_sample failed: {}", e));
     }
     if let Err(e) = bound_session_sample(&mut tpm) {
-        println!("⚠️  bound_session_sample failed: {}", e);
+        print_error(&format!("bound_session_sample failed: {}", e));
     }
-    // NVX — not yet implemented (needs Platform auth / simulator)
+    // NVX - not yet implemented (needs Platform auth / simulator)
 
     announce(
         "************************* 🦀🦀🦀 Generated by Tss.Rust 🦀🦀🦀 *************************",

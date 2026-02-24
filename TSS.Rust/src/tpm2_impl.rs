@@ -544,6 +544,9 @@ impl Tpm2 {
             self.sessions = None;
             return Err(e);
         }
+        // Clear encryption session state after use (matches C++ DoParmEncryption cleanup)
+        self.enc_session = None;
+        self.dec_session = None;
 
         // Reset position to start of parameters area and unmarshall
         resp_buf.set_current_pos(resp_params_pos);

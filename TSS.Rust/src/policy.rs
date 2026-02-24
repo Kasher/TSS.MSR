@@ -19,7 +19,7 @@ use crate::tpm_structure::TpmEnum;
 use crate::tpm_types::*;
 
 // ---------------------------------------------------------------------------
-// PolicyAssertion trait — base for all policy nodes
+// PolicyAssertion trait - base for all policy nodes
 // ---------------------------------------------------------------------------
 
 /// Trait implemented by all policy assertion types.
@@ -32,7 +32,7 @@ pub trait PolicyAssertion {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: PolicyUpdate — shared digest update logic per TPM spec
+// Helper: PolicyUpdate - shared digest update logic per TPM spec
 // ---------------------------------------------------------------------------
 
 /// `policyDigest = H(policyDigest || commandCode || arg2)`
@@ -120,7 +120,7 @@ pub(crate) fn compute_digest(
 // Concrete policy assertion types
 // ---------------------------------------------------------------------------
 
-/// PolicyCommandCode — limits the authorized action to a specific command.
+/// PolicyCommandCode - limits the authorized action to a specific command.
 pub struct PolicyCommandCode {
     pub command_code: TPM_CC,
 }
@@ -144,7 +144,7 @@ impl PolicyAssertion for PolicyCommandCode {
     }
 }
 
-/// PolicyLocality — limits authorization to a specific locality.
+/// PolicyLocality - limits authorization to a specific locality.
 pub struct PolicyLocality {
     pub locality: TPMA_LOCALITY,
 }
@@ -172,7 +172,7 @@ impl PolicyAssertion for PolicyLocality {
     }
 }
 
-/// PolicyPCR — gates policy on PCR values.
+/// PolicyPCR - gates policy on PCR values.
 pub struct PolicyPcr {
     pub pcr_values: Vec<TPM2B_DIGEST>,
     pub pcr_selections: Vec<TPMS_PCR_SELECTION>,
@@ -212,7 +212,7 @@ impl PolicyAssertion for PolicyPcr {
     }
 }
 
-/// PolicyPassword — requires the object's authorization value be provided as a password.
+/// PolicyPassword - requires the object's authorization value be provided as a password.
 pub struct PolicyPassword;
 
 impl PolicyPassword {
@@ -233,7 +233,7 @@ impl PolicyAssertion for PolicyPassword {
     }
 }
 
-/// PolicyAuthValue — requires auth-value HMAC during policy use.
+/// PolicyAuthValue - requires auth-value HMAC during policy use.
 pub struct PolicyAuthValue;
 
 impl PolicyAuthValue {
@@ -253,7 +253,7 @@ impl PolicyAssertion for PolicyAuthValue {
     }
 }
 
-/// PolicyCpHash — binds policy to specific command parameters.
+/// PolicyCpHash - binds policy to specific command parameters.
 pub struct PolicyCpHash {
     pub cp_hash: Vec<u8>,
 }
@@ -275,7 +275,7 @@ impl PolicyAssertion for PolicyCpHash {
     }
 }
 
-/// PolicyNameHash — binds policy to specific object handles.
+/// PolicyNameHash - binds policy to specific object handles.
 pub struct PolicyNameHash {
     pub name_hash: Vec<u8>,
 }
@@ -297,7 +297,7 @@ impl PolicyAssertion for PolicyNameHash {
     }
 }
 
-/// PolicyCounterTimer — gates policy on TPMS_TIME_INFO contents.
+/// PolicyCounterTimer - gates policy on TPMS_TIME_INFO contents.
 pub struct PolicyCounterTimer {
     pub operand_b: Vec<u8>,
     pub offset: u16,
@@ -334,7 +334,7 @@ impl PolicyAssertion for PolicyCounterTimer {
     }
 }
 
-/// PolicySecret — secret-based authorization (proves knowledge of an auth value).
+/// PolicySecret - secret-based authorization (proves knowledge of an auth value).
 pub struct PolicySecret {
     pub auth_object_name: Vec<u8>,
     pub policy_ref: Vec<u8>,
@@ -377,7 +377,7 @@ impl PolicyAssertion for PolicySecret {
     }
 }
 
-/// PolicySigned — asymmetrically signed authorization.
+/// PolicySigned - asymmetrically signed authorization.
 pub struct PolicySigned {
     pub include_tpm_nonce: bool,
     pub cp_hash_a: Vec<u8>,
@@ -468,7 +468,7 @@ impl PolicyAssertion for PolicySigned {
     }
 }
 
-/// PolicyNV — conditional gating based on NV Index contents.
+/// PolicyNV - conditional gating based on NV Index contents.
 pub struct PolicyNv {
     pub operand_b: Vec<u8>,
     pub offset: u16,
@@ -511,7 +511,7 @@ impl PolicyAssertion for PolicyNv {
     }
 }
 
-/// PolicyOR — allows one of several policy branches to satisfy the policy.
+/// PolicyOR - allows one of several policy branches to satisfy the policy.
 pub struct PolicyOr {
     pub branches: Vec<Vec<Box<dyn PolicyAssertion>>>,
 }
@@ -558,7 +558,7 @@ impl PolicyAssertion for PolicyOr {
     }
 }
 
-/// PolicyAuthorize — transforms a policy digest using a signing key's authorization.
+/// PolicyAuthorize - transforms a policy digest using a signing key's authorization.
 pub struct PolicyAuthorize {
     pub approved_policy: Vec<u8>,
     pub policy_ref: Vec<u8>,
@@ -620,7 +620,7 @@ impl PolicyAssertion for PolicyAuthorize {
     }
 }
 
-/// PolicyDuplicationSelect — qualifies duplication to a selected new parent.
+/// PolicyDuplicationSelect - qualifies duplication to a selected new parent.
 pub struct PolicyDuplicationSelect {
     pub object_name: Vec<u8>,
     pub new_parent_name: Vec<u8>,
