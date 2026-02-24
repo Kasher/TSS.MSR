@@ -1,0 +1,17 @@
+[package]
+name = "tss-rust"
+version = "0.1.0"
+edition = "2021"
+
+[build]
+rustflags = ["-A", "clippy::non_camel_case_types", "-A", "clippy::unused_variables"]
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+num_enum = "0.7.3"
+
+[[example]]
+name = "tpm_samples"
+path = "examples/tpm_samples.rs"
