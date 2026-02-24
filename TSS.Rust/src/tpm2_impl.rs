@@ -207,7 +207,6 @@ impl Tpm2 {
     }
 
     /// Internal method to dispatch a command to the TPM
-    /// Matches the C++ DispatchOut function
     pub fn dispatch_command<R: ReqStructure>(
         &mut self,
         cmd_code: TPM_CC,
@@ -365,7 +364,6 @@ impl Tpm2 {
     }
 
     /// Process the TPM response and update the response structure
-    /// Matches the C++ DispatchIn function
     pub fn process_response<T: RespStructure>(
         &mut self,
         cmd_code: TPM_CC,
@@ -425,8 +423,6 @@ impl Tpm2 {
 
         // Figure out our reaction to the received response. This logic depends on:
         //   errors_allowed - no exception, regardless of success or failure
-        //
-        // We'll implement error handling here similar to C++ version
 
         // Store a copy of audit command flag before clearing invocation state
         let audit_command = self.audit_command;
@@ -544,7 +540,7 @@ impl Tpm2 {
             self.sessions = None;
             return Err(e);
         }
-        // Clear encryption session state after use (matches C++ DoParmEncryption cleanup)
+        // Clear encryption session state after use
         self.enc_session = None;
         self.dec_session = None;
 
@@ -640,7 +636,6 @@ impl Tpm2 {
 /// High-level convenience methods for session management and common patterns.
 impl Tpm2 {
     /// Start a simple HMAC or policy auth session (no salt, no binding).
-    /// This is the most common form matching C++ `tpm.StartAuthSession(TPM_SE, TPM_ALG_ID)`.
     pub fn start_auth_session(
         &mut self,
         session_type: TPM_SE,
@@ -655,7 +650,6 @@ impl Tpm2 {
     }
 
     /// Start an auth session with explicit attributes and symmetric definition.
-    /// Matches C++ `tpm.StartAuthSession(TPM_SE, TPM_ALG_ID, TPMA_SESSION, TPMT_SYM_DEF)`.
     pub fn start_auth_session_full(
         &mut self,
         session_type: TPM_SE,
@@ -677,7 +671,6 @@ impl Tpm2 {
     }
 
     /// Start an auth session with full control (salt key, bind object, etc.).
-    /// Matches the full C++ overload.
     pub fn start_auth_session_ex(
         &mut self,
         tpm_key: &TPM_HANDLE,
@@ -1061,6 +1054,8 @@ impl Tpm2 {
                 // Update session data based on what the TPM just told us
                 session.sess_out.nonce = auth_response.nonce;
                 session.sess_out.sessionAttributes = auth_response.sessionAttributes;
+                // Update command attributes for next use
+                session.sess_in.sessionAttributes = auth_response.sessionAttributes;
 
                 if session.session_type == TPM_SE::HMAC
                     || (session.session_type == TPM_SE::POLICY && session.needs_hmac)

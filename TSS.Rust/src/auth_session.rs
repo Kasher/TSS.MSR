@@ -71,7 +71,6 @@ impl Session {
     }
 
     /// Create a fully initialized HMAC or policy session from a TPM StartAuthSession response.
-    /// This mirrors the C++ AUTH_SESSION constructor + CalcSessionKey().
     pub fn from_tpm_response(
         session_handle: TPM_HANDLE,
         session_type: TPM_SE,
@@ -186,8 +185,12 @@ impl Session {
             (&self.sess_out.nonce, &self.sess_in.nonce)
         };
 
-        // Session attributes as a single byte
-        let session_attrs = vec![self.sess_in.sessionAttributes.get_value()];
+        // Session attributes: use command attrs for commands, response attrs for responses
+        let session_attrs = if is_command {
+            vec![self.sess_in.sessionAttributes.get_value()]
+        } else {
+            vec![self.sess_out.sessionAttributes.get_value()]
+        };
 
         // Get auth value from the associated handle
         let mut auth = Vec::new();

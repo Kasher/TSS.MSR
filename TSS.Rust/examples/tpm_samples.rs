@@ -852,7 +852,6 @@ fn encrypt_decrypt_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 // =============================== Auth Session Samples ===============================
 
 /// Helper: create an HMAC primary key with a policy digest and optional auth value.
-/// Mirrors C++ MakeHmacPrimaryWithPolicy.
 fn make_hmac_primary_with_policy(
     tpm: &mut Tpm2,
     policy_digest: &[u8],
@@ -950,12 +949,22 @@ fn auth_sessions_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 fn dictionary_attack_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     announce("Dictionary Attack Sample");
 
-    // Reset the lockout counter
+    // Reset the lockout counter.
+    // This may fail if the TPM's lockout hierarchy is locked from a previous run
+    // or if TBS restricts this command on Windows.
     let lockout = TPM_HANDLE::new(TPM_RH::LOCKOUT.get_value());
-    tpm.DictionaryAttackLockReset(&lockout)?;
+    tpm.allow_errors();
+    let _ = tpm.DictionaryAttackLockReset(&lockout);
+    if tpm.last_response_code() != TPM_RC::SUCCESS {
+        print_error(&format!("DictionaryAttackLockReset failed (rc={:?}) - \
+            TPM lockout hierarchy may be locked from a previous run. \
+            The lockoutRecovery timer must expire before this command succeeds.",
+            tpm.last_response_code()));
+        return Ok(());
+    }
     println!("Dictionary attack lockout reset");
 
-    // Configure dictionary attack parameters
+    // Configure dictionary attack parameters to be forgiving for testing
     let new_max_tries: u32 = 1000;
     let new_recovery_time: u32 = 1;
     let lockout_recovery: u32 = 1;
@@ -2120,19 +2129,22 @@ fn policy_signed_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     sw_key.create_key()?;
     println!("Created software RSA-2048 signing key");
 
-    // Load the public part into the TPM (NULL hierarchy = external key)
+    // Load the public part into the TPM (OWNER hierarchy for valid tickets)
     let auth_key_handle = tpm.LoadExternal(
         &TPMT_SENSITIVE::default(),
         &sw_key.publicPart,
-        &TPM_HANDLE::new(TPM_RH::NULL.get_value()),
+        &TPM_HANDLE::new(TPM_RH::OWNER.get_value()),
     )?;
     println!("Loaded SW key public part into TPM: {:?}", auth_key_handle);
 
     // Step 1: Compute trial policy digest for PolicySigned
+    // Note: TPM checks signature scheme matches the key even in trial mode,
+    // so we must provide a properly-schemed signature (content doesn't matter).
     let trial = tpm.start_auth_session(TPM_SE::TRIAL, hash_alg)?;
     let policy_ref: Vec<u8> = vec![];
-    // PolicySigned updates the digest as:
-    //   policyDigest = H(policyDigest || TPM_CC_PolicySigned || keyName || policyRef)
+
+    let dummy_hash = Crypto::hash(hash_alg, &[])?;
+    let dummy_sig = sw_key.sign(&dummy_hash, hash_alg)?;
     tpm.PolicySigned(
         &auth_key_handle,
         &session_handle(&trial),
@@ -2140,7 +2152,7 @@ fn policy_signed_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
         &vec![],      // cpHashA
         &policy_ref,
         0,            // expiration
-        &Some(TPMU_SIGNATURE::null(TPMS_NULL_SIGNATURE::default())), // no sig needed for trial
+        &dummy_sig.signature,
     )?;
     let policy_digest = tpm.PolicyGetDigest(&session_handle(&trial))?;
     tpm.FlushContext(&session_handle(&trial))?;
@@ -2224,11 +2236,11 @@ fn policy_authorize_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     sw_key.create_key()?;
     println!("Created authorizing SW key");
 
-    // Load the public part into the TPM
+    // Load the public part into the TPM (OWNER hierarchy for valid tickets)
     let auth_key_handle = tpm.LoadExternal(
         &TPMT_SENSITIVE::default(),
         &sw_key.publicPart,
-        &TPM_HANDLE::new(TPM_RH::NULL.get_value()),
+        &TPM_HANDLE::new(TPM_RH::OWNER.get_value()),
     )?;
 
     // Get the authorizing key name
@@ -2308,8 +2320,7 @@ fn admin_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 
     // Note: Clear, ChangePPS, ChangeEPS, HierarchyControl, and SetPrimaryPolicy
     // with locality require Platform auth or locality control, which are not
-    // available on TBS. Those are skipped here (as in the C++ sample when
-    // PlatformAvailable() returns false).
+    // available on TBS. Those are skipped here.
 
     // --- HierarchyChangeAuth ---
     // We can change the authValue for the owner hierarchy.
@@ -2620,6 +2631,11 @@ fn bound_session_inner(tpm: &mut Tpm2, owner_auth: &[u8]) -> Result<(), TpmError
     )?;
     let sess = tpm.last_session().unwrap_or(sess);
     println!("Wrote to NV index with bound session (different-entity binding)");
+
+    // After NV_Write, the TPM sets TPMA_NV::WRITTEN which changes the NV Name.
+    // We must re-read the public area to get the updated name for subsequent commands.
+    let nv_info = tpm.NV_ReadPublic(&nv_handle)?;
+    nv_handle_with_auth.set_name(&nv_info.nvName)?;
 
     // Read back
     let read_data = tpm.with_session(sess.clone()).NV_Read(

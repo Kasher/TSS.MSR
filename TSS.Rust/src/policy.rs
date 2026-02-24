@@ -449,11 +449,11 @@ impl PolicyAssertion for PolicySigned {
         })?;
         let signature = sw_key.sign(&a_hash, hash_alg)?;
 
-        // Load the public key into the TPM
+        // Load the public key into the TPM (OWNER hierarchy for valid tickets)
         let pub_key_handle = tpm.LoadExternal(
             &TPMT_SENSITIVE::default(),
             &self.public_key,
-            &TPM_HANDLE::new(TPM_RH::NULL.get_value()),
+            &TPM_HANDLE::new(TPM_RH::OWNER.get_value()),
         )?;
 
         let result = tpm.PolicySigned(
@@ -589,11 +589,11 @@ impl PolicyAssertion for PolicyAuthorize {
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
         let key_name = self.authorizing_key.get_name()?;
 
-        // Load the authorizing key
+        // Load the authorizing key (OWNER hierarchy for valid tickets)
         let key_handle = tpm.LoadExternal(
             &TPMT_SENSITIVE::default(),
             &self.authorizing_key,
-            &TPM_HANDLE::new(TPM_RH::NULL.get_value()),
+            &TPM_HANDLE::new(TPM_RH::OWNER.get_value()),
         )?;
 
         // Compute aHash and get a verification ticket

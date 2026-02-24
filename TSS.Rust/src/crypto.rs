@@ -78,7 +78,6 @@ impl Crypto {
         Ok(digest)
     }
 
-    // HMAC implementation equivalent to the C++ version
     pub fn hmac(hash_alg: TPM_ALG_ID, key: &[u8], to_hash: &[u8]) -> Result<Vec<u8>, TpmError> {
         // Choose the appropriate HMAC algorithm based on the hash algorithm
         match hash_alg {
