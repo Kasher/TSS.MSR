@@ -16,6 +16,17 @@ pub trait TpmMarshaller {
 
     /** Populate this object from the TPM representation in the given marshaling buffer */
     fn initFromTpm(&mut self, buf: &mut TpmBuffer) -> Result<(), TpmError>;
+
+    /** Convert this object to its complete TPM wire representation. */
+    #[allow(non_snake_case)]
+    fn toBytes(&self) -> Result<Vec<u8>, TpmError> {
+        let mut buffer = TpmBuffer::new(None);
+        self.toTpm(&mut buffer)?;
+        if !buffer.isOk() {
+            return Err(TpmError::BufferOverflow);
+        }
+        Ok(buffer.trim().to_vec())
+    }
 }
 
 pub struct TpmBuffer {
@@ -136,6 +147,24 @@ impl TpmBuffer {
         self.buf.len().saturating_sub(self.pos)
     }
 
+    /// Returns whether `size` can be represented without truncation by a `prefix_len`-byte
+    /// unsigned length field.
+    fn size_fits_prefix(size: usize, prefix_len: usize) -> bool {
+        let Some(bit_count) = prefix_len.checked_mul(8) else {
+            return false;
+        };
+        if bit_count == 0 || bit_count > u64::BITS as usize {
+            return false;
+        }
+
+        let max_size = if bit_count == u64::BITS as usize {
+            u64::MAX
+        } else {
+            (1_u64 << bit_count) - 1
+        };
+        u64::try_from(size).is_ok_and(|size| size <= max_size)
+    }
+
     pub fn check_status(&self) -> Result<(), TpmError> {
         if self.isOk() {
             Ok(())
@@ -221,7 +250,7 @@ impl TpmBuffer {
 
     /** Writes the given 8-bit integer to this buffer */
     pub fn writeByte(&mut self, val: u8) {
-        if self.check_len(1) {
+        if self.ensure_write_len(1) {
             self.buf[self.pos] = val;
             self.pos += 1;
         }
@@ -270,7 +299,7 @@ impl TpmBuffer {
     /** Marshalls the given byte buffer with no length prefix. */
     pub fn writeByteBuf(&mut self, data: &[u8]) {
         let data_size = data.len();
-        if data_size == 0 || !self.check_len(data_size) {
+        if data_size == 0 || !self.ensure_write_len(data_size) {
             return;
         }
         self.buf[self.pos..self.pos + data_size].copy_from_slice(data);
@@ -297,6 +326,11 @@ impl TpmBuffer {
 
     /** Marshalls the given byte buffer with a length prefix. */
     pub fn writeSizedByteBuf(&mut self, data: &[u8], size_len: usize) {
+        // Reject the payload before narrowing its length into the wire-format prefix.
+        if !Self::size_fits_prefix(data.len(), size_len) {
+            self.out_of_bounds = true;
+            return;
+        }
         self.write_num(data.len() as u64, size_len);
         self.writeByteBuf(data);
     }
@@ -319,7 +353,7 @@ impl TpmBuffer {
 
     pub fn writeSizedObj<T: TpmMarshaller>(&mut self, obj: &T) -> Result<(), TpmError> {
         const LEN_SIZE: usize = 2; // Length of the object size is always 2 bytes
-        if !self.check_len(LEN_SIZE) {
+        if !self.ensure_write_len(LEN_SIZE) {
             return Ok(());
         }
 
@@ -331,6 +365,11 @@ impl TpmBuffer {
         obj.toTpm(self)?;
         // Calc marshaled object len
         let obj_size = self.pos - (size_pos + LEN_SIZE);
+        // Sized TPM objects always use a two-byte prefix; a larger body cannot be encoded.
+        if !Self::size_fits_prefix(obj_size, LEN_SIZE) {
+            self.out_of_bounds = true;
+            return Err(TpmError::BufferOverflow);
+        }
         // Marshal it in the appropriate position
         self.pos = size_pos;
         self.writeShort(obj_size as u16);
@@ -349,6 +388,9 @@ impl TpmBuffer {
         }
         if size == 0 {
             return Ok(());
+        }
+        if !self.check_read_len(size as usize) {
+            return Err(TpmError::BufferUnderflow);
         }
 
         if size as usize > self.remaining_len() {
@@ -375,6 +417,11 @@ impl TpmBuffer {
     }
 
     pub fn writeObjArr<T: TpmMarshaller>(&mut self, arr: &[T]) -> Result<(), TpmError> {
+        // Array counts are encoded as u32 and must not be truncated on 64-bit platforms.
+        if !Self::size_fits_prefix(arr.len(), std::mem::size_of::<u32>()) {
+            self.out_of_bounds = true;
+            return Err(TpmError::BufferOverflow);
+        }
         self.writeInt(arr.len() as u32);
         for elt in arr {
             if !self.isOk() {
@@ -422,6 +469,11 @@ impl TpmBuffer {
         U: Into<u64>,
     {
         // Length of the array size is always 4 bytes
+        // Array counts are encoded as u32 and must not be truncated on 64-bit platforms.
+        if !Self::size_fits_prefix(arr.len(), std::mem::size_of::<u32>()) {
+            self.out_of_bounds = true;
+            return;
+        }
         self.writeInt(arr.len() as u32);
         for val in arr {
             if !self.isOk() {
@@ -473,7 +525,32 @@ impl TpmBuffer {
 mod tests {
     use super::*;
     use crate::tpm_structure::TpmStructure;
-    use crate::tpm_types::{TPM2B_DIGEST, TPM_HANDLE};
+    use crate::tpm_types::{TPM2B_DIGEST, TPM2B_PRIVATE, TPM_HANDLE};
+
+    struct OversizedSizedObject;
+
+    impl TpmMarshaller for OversizedSizedObject {
+        fn toTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
+            buffer.writeByteBuf(&vec![0; u16::MAX as usize + 1]);
+            Ok(())
+        }
+
+        fn initFromTpm(&mut self, _buffer: &mut TpmBuffer) -> Result<(), TpmError> {
+            Ok(())
+        }
+    }
+
+    struct SizedObjectWrapper;
+
+    impl TpmMarshaller for SizedObjectWrapper {
+        fn toTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
+            buffer.writeSizedObj(&OversizedSizedObject)
+        }
+
+        fn initFromTpm(&mut self, _buffer: &mut TpmBuffer) -> Result<(), TpmError> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn create_obj_rejects_zero_length_input() {
@@ -508,5 +585,20 @@ mod tests {
         ));
         assert_eq!(buffer.size(), 3);
         assert_eq!(buffer.current_pos(), 2);
+    }
+
+    #[test]
+    fn to_bytes_rejects_sized_byte_buffer_larger_than_prefix() {
+        let value = TPM2B_PRIVATE::new(&vec![0; u16::MAX as usize + 1]);
+
+        assert!(matches!(value.toBytes(), Err(TpmError::BufferOverflow)));
+    }
+
+    #[test]
+    fn to_bytes_rejects_sized_object_larger_than_prefix() {
+        assert!(matches!(
+            SizedObjectWrapper.toBytes(),
+            Err(TpmError::BufferOverflow)
+        ));
     }
 }
