@@ -429,6 +429,7 @@ pub trait TpmDevice {
 #[cfg(target_os = "windows")]
 pub struct TpmTbsDevice {
     context: *mut c_void,
+    owns_context: bool,
     result_buffer: [u8; 4096],
     res_size: u32,
     tpm_info: u32,
@@ -439,10 +440,34 @@ impl TpmTbsDevice {
     pub fn new() -> Self {
         TpmTbsDevice {
             context: ptr::null_mut(),
+            owns_context: false,
             result_buffer: [0; 4096],
             res_size: 0,
             tpm_info: 0,
         }
+    }
+
+    /// Creates a TPM device that submits commands through a caller-owned TBS context.
+    ///
+    /// The context is borrowed and will not be closed by [`TpmDevice::close`] or when the device
+    /// is dropped.
+    ///
+    /// # Safety
+    ///
+    /// `context` must be a valid TBS context and must remain valid until this device is closed or
+    /// dropped. The caller must synchronize any other use of the context.
+    pub unsafe fn from_borrowed_context(context: *mut c_void) -> Result<Self, TpmError> {
+        if context.is_null() {
+            return Err(TpmError::InvalidParameter);
+        }
+
+        Ok(Self {
+            context,
+            owns_context: false,
+            result_buffer: [0; 4096],
+            res_size: 0,
+            tpm_info: TpmConnInfo::TpmTbsConn as u32,
+        })
     }
 }
 
@@ -472,6 +497,7 @@ impl TpmDevice for TpmTbsDevice {
                 res
             )));
         }
+        self.owns_context = true;
 
         // Get device info to check if TPM 2.0 is available
         let mut info = TPM_DEVICE_INFO::default();
@@ -483,10 +509,10 @@ impl TpmDevice for TpmTbsDevice {
         };
 
         if res != TBS_SUCCESS {
+            self.close();
             return Err(TpmError::TbsError("Failed to get device info".to_string()));
         } else if info.tpmVersion != TPM_VERSION_20 {
-            unsafe { Tbsip_Context_Close(self.context) };
-            self.context = ptr::null_mut();
+            self.close();
             return Err(TpmError::TbsError(
                 "Platform does not contain a TPM 2.0".to_string(),
             ));
@@ -499,11 +525,12 @@ impl TpmDevice for TpmTbsDevice {
     }
 
     fn close(&mut self) {
-        if !self.context.is_null() {
+        if self.owns_context && !self.context.is_null() {
             unsafe { Tbsip_Context_Close(self.context) };
-            self.context = ptr::null_mut();
         }
-
+        self.context = ptr::null_mut();
+        self.owns_context = false;
+        self.res_size = 0;
         self.tpm_info = 0;
     }
 
@@ -567,6 +594,28 @@ impl TpmDevice for TpmTbsDevice {
 
     fn get_tpm_info(&self) -> u32 {
         self.tpm_info
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use std::ptr::NonNull;
+
+    use super::*;
+
+    #[test]
+    fn borrowed_context_rejects_null() {
+        let result = unsafe { TpmTbsDevice::from_borrowed_context(ptr::null_mut()) };
+        assert!(matches!(result, Err(TpmError::InvalidParameter)));
+    }
+
+    #[test]
+    fn borrowed_context_is_not_owned() {
+        let context = NonNull::<c_void>::dangling().as_ptr();
+        let device = unsafe { TpmTbsDevice::from_borrowed_context(context) }.unwrap();
+
+        assert_eq!(device.context, context);
+        assert!(!device.owns_context);
     }
 }
 
