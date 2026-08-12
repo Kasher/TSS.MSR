@@ -115,12 +115,23 @@ impl Crypto {
                 mac.update(to_hash);
                 Ok(mac.finalize().into_bytes().to_vec())
             }
-            _ => {
-                return Err(TpmError::NotSupported(format!(
-                    "Unsupported hash algorithm: {:?}",
-                    hash_alg
-                )))
-            }
+            _ => Err(TpmError::NotSupported(format!(
+                "Unsupported hash algorithm: {:?}",
+                hash_alg
+            ))),
+        }
+    }
+
+    pub(crate) fn pkcs1v15_sign_scheme(hash_alg: TPM_ALG_ID) -> Result<Pkcs1v15Sign, TpmError> {
+        match hash_alg {
+            TPM_ALG_ID::SHA1 => Ok(Pkcs1v15Sign::new::<Sha1>()),
+            TPM_ALG_ID::SHA256 => Ok(Pkcs1v15Sign::new::<Sha256>()),
+            TPM_ALG_ID::SHA384 => Ok(Pkcs1v15Sign::new::<Sha384>()),
+            TPM_ALG_ID::SHA512 => Ok(Pkcs1v15Sign::new::<Sha512>()),
+            _ => Err(TpmError::NotSupported(format!(
+                "Unsupported RSASSA hash algorithm: {:?}",
+                hash_alg
+            ))),
         }
     }
 
@@ -154,12 +165,20 @@ impl Crypto {
         let rsa_public_key = RsaPublicKey::new(BigUint::from_bytes_be(rsa_pub_key), BigUint::from_bytes_be(&[1, 0, 1]))
             .map_err(|_| TpmError::InvalidArraySize("Invalid RSA public key".to_string()))?;
 
+        let scheme = Self::pkcs1v15_sign_scheme(signature.hash)?;
+        let expected_digest_size = Self::digestSize(signature.hash);
+        if signed_blob_hash.len() != expected_digest_size {
+            return Err(TpmError::InvalidArraySize(format!(
+                "ValidateSignature: digest length {} does not match {:?} length {}",
+                signed_blob_hash.len(),
+                signature.hash,
+                expected_digest_size
+            )));
+        }
+
         Ok(rsa_public_key
-            .verify(
-                Pkcs1v15Sign::new::<Sha1>(),
-                &signed_blob_hash,
-                &signature.sig
-            ).is_ok())
+            .verify(scheme, &signed_blob_hash, &signature.sig)
+            .is_ok())
     }
 
     // KDFa implementation as specified in TPM 2.0 Part 1
@@ -171,7 +190,7 @@ impl Crypto {
         context_v: &[u8],
         bits: usize,
     ) -> Result<Vec<u8>, TpmError> {
-        let bytes_needed = (bits + 7) / 8;
+        let bytes_needed = bits.div_ceil(8);
         let mut result = Vec::new();
         let mut counter = 1u32;
 
@@ -231,11 +250,11 @@ impl Crypto {
 
         let cipher = Aes128::new(GenericArray::from_slice(key));
         let mut result = Vec::with_capacity(data.len());
-        let mut feedback = GenericArray::from_slice(iv).clone();
+        let mut feedback = *GenericArray::from_slice(iv);
 
         for chunk in data.chunks(16) {
             // Encrypt the feedback (IV or previous ciphertext)
-            let mut encrypted_feedback = feedback.clone();
+            let mut encrypted_feedback = feedback;
             cipher.encrypt_block(&mut encrypted_feedback);
 
             if encrypt {
@@ -268,5 +287,40 @@ impl Crypto {
         let mut result = vec![0u8; num_bytes];
         OsRng.fill_bytes(&mut result);
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::rngs::OsRng;
+    use rsa::traits::PublicKeyParts;
+    use rsa::RsaPrivateKey;
+
+    #[test]
+    fn validate_signature_uses_signature_hash_algorithm() -> Result<(), TpmError> {
+        let mut rng = OsRng;
+        let private_key = RsaPrivateKey::new(&mut rng, 2048)
+            .map_err(|e| TpmError::GenericError(format!("RSA key generation failed: {e}")))?;
+        let public_key = TPMT_PUBLIC {
+            parameters: Some(TPMU_PUBLIC_PARMS::rsaDetail(TPMS_RSA_PARMS::default())),
+            unique: Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA {
+                buffer: private_key.n().to_bytes_be(),
+            })),
+            ..Default::default()
+        };
+
+        let message = b"digest dispatch regression";
+        let digest = Sha256::digest(message).to_vec();
+        let sig = private_key
+            .sign(Pkcs1v15Sign::new::<Sha256>(), &digest)
+            .map_err(|e| TpmError::GenericError(format!("RSA signing failed: {e}")))?;
+        let signature = Some(TPMU_SIGNATURE::rsassa(TPMS_SIGNATURE_RSASSA {
+            hash: TPM_ALG_ID::SHA256,
+            sig,
+        }));
+
+        assert!(Crypto::validate_signature(&public_key, digest, &signature)?);
+        Ok(())
     }
 }

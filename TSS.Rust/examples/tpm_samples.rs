@@ -1,4 +1,33 @@
-﻿use std::io::{self, Write};
+﻿//! TSS.Rust sample suite.
+//!
+//! # This suite mutates TPM state
+//!
+//! These samples are ports of the C++ TSS samples and were written against the TPM
+//! *simulator*, where state is disposable. Several of them change persistent state:
+//! `misc_admin_sample` and `bound_session_sample` rewrite the OWNER hierarchy auth
+//! value, and `policy_counter_timer_sample` rewrites the OWNER primary policy. Each
+//! restores what it changed, but a failure part-way through can leave it dirty.
+//!
+//! The recovery prologue (`reset_da_lockout`, `recover_endorsement_hierarchy`,
+//! `recover_owner_hierarchy`) exists to clean that up between simulator runs. On real
+//! hardware it is destructive: it submits known-wrong auth values to the OWNER and
+//! LOCKOUT hierarchies, and every wrong guess feeds the TPM's dictionary attack
+//! counter. Enough runs will push a real TPM into DA lockout, after which unrelated
+//! software - anything going through the Platform Crypto Provider, for instance -
+//! starts failing. Run elevated, it would also rewrite the ENDORSEMENT hierarchy auth
+//! and primary policy outright.
+//!
+//! The prologue is therefore opt-in. Pass `--recover-hierarchies` to enable it, and
+//! only against a simulator or a machine whose TPM you are willing to disturb.
+//!
+//! # This suite is not a regression oracle
+//!
+//! Because it mutates TPM state, consecutive runs against real hardware are not
+//! comparable: run N alters the state run N+1 observes, so output length and error
+//! counts drift on their own. To A/B two builds, run them adjacently in the same state
+//! and compare output as a set. The crate's unit tests are the reliable signal.
+
+use std::io::{self, Write};
 use tss_rust::{
     auth_session::Session,
     crypto::Crypto,
@@ -47,20 +76,16 @@ fn get_capabilities(tpm: &mut Tpm2) -> Result<(), Box<dyn std::error::Error>> {
         let addition_to_start_val: u32;
 
         let caps = tpm.GetCapability(TPM_CAP::ALGS, start_val, 8)?;
-        if let Some(caps) = caps.capabilityData {
-            if let TPMU_CAPABILITIES::algorithms(props) = caps {
-                for p in props.algProperties.iter() {
-                    println!("{}: {}", p.alg, p.algProperties);
-                }
-
-                addition_to_start_val = (props.algProperties[props.algProperties.len() - 1]
-                    .alg
-                    .get_value()
-                    + 1)
-                .into();
-            } else {
-                break;
+        if let Some(TPMU_CAPABILITIES::algorithms(props)) = caps.capabilityData {
+            for p in props.algProperties.iter() {
+                println!("{}: {}", p.alg, p.algProperties);
             }
+
+            addition_to_start_val = (props.algProperties[props.algProperties.len() - 1]
+                .alg
+                .get_value()
+                + 1)
+            .into();
         } else {
             break;
         }
@@ -79,22 +104,18 @@ fn get_capabilities(tpm: &mut Tpm2) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let caps = tpm.GetCapability(TPM_CAP::COMMANDS, start_val, 32)?;
 
-        if let Some(caps) = caps.capabilityData {
-            if let TPMU_CAPABILITIES::command(props) = caps {
-                for p in props.commandAttributes.iter() {
-                    let command_value = p.get_value() & 0xFFFF;
-                    // Decode the packed structure
-                    if let Ok(cc) = TPM_CC::try_from(command_value) {
-                        supported_commands.push(format!("TPM_CC_{}", cc.to_string()));
-                    }
-                    // let masked_attr = TPMA_CC::try_from(p.get_value() & 0xFFff0000)?;
-
-                    // println!("Command {}", cc);
-
-                    start_val = command_value;
+        if let Some(TPMU_CAPABILITIES::command(props)) = caps.capabilityData {
+            for p in props.commandAttributes.iter() {
+                let command_value = p.get_value() & 0xFFFF;
+                // Decode the packed structure
+                if let Ok(cc) = TPM_CC::try_from(command_value) {
+                    supported_commands.push(format!("TPM_CC_{}", cc));
                 }
-            } else {
-                break;
+                // let masked_attr = TPMA_CC::try_from(p.get_value() & 0xFFff0000)?;
+
+                // println!("Command {}", cc);
+
+                start_val = command_value;
             }
         } else {
             break;
@@ -114,7 +135,7 @@ fn get_capabilities(tpm: &mut Tpm2) -> Result<(), Box<dyn std::error::Error>> {
     announce(&announcement);
     let column_width = 35;
     let columns = 3;
-    let rows = (supported_commands.len() + columns - 1) / columns;
+    let rows = supported_commands.len().div_ceil(columns);
 
     for row in 0..rows {
         for col in 0..columns {
@@ -168,9 +189,9 @@ fn make_child_signing_key(tpm: &mut Tpm2, parent: &TPM_HANDLE, restricted: bool)
 
     let template = TPMT_PUBLIC::new(TPM_ALG_ID::SHA1, object_attributes, &Default::default(), &Some(parameters), &Some(unique));
 
-    let new_signing_key = tpm.Create(&parent, &Default::default(), &template, &Default::default(), &Default::default())?;
+    let new_signing_key = tpm.Create(parent, &Default::default(), &template, &Default::default(), &Default::default())?;
 
-    tpm.Load(&parent, &new_signing_key.outPrivate, &new_signing_key.outPublic)
+    tpm.Load(parent, &new_signing_key.outPrivate, &new_signing_key.outPublic)
 }
 
 fn make_endorsement_key(tpm: &mut Tpm2) -> Result<TPM_HANDLE, TpmError> {
@@ -465,7 +486,7 @@ fn pcr_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("PCR 16 after event: {:?}", pcr_vals2.pcrValues);
 
     // Extend with a hash value
-    let extend_hash = TPMT_HA::new(TPM_ALG_ID::SHA256, &Crypto::hash(TPM_ALG_ID::SHA256, &vec![6, 7, 8])?);
+    let extend_hash = TPMT_HA::new(TPM_ALG_ID::SHA256, &Crypto::hash(TPM_ALG_ID::SHA256, &[6, 7, 8])?);
     tpm.PCR_Extend(&pcr_handle, &vec![extend_hash])?;
     println!("Extended hash into PCR 16");
 
@@ -514,7 +535,7 @@ fn primary_keys_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Created signing primary key with handle: {:?}", new_primary.handle);
 
     // Sign some data
-    let data_to_sign = Crypto::hash(TPM_ALG_ID::SHA256, &b"Data to sign".to_vec())?;
+    let data_to_sign = Crypto::hash(TPM_ALG_ID::SHA256, b"Data to sign".as_ref())?;
     let signature = tpm.Sign(
         &new_primary.handle,
         &data_to_sign,
@@ -571,7 +592,7 @@ fn child_keys_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Created child signing key: {:?}", sign_key);
 
     // Sign some data
-    let data_to_sign = Crypto::hash(TPM_ALG_ID::SHA1, &b"Test data for signing".to_vec())?;
+    let data_to_sign = Crypto::hash(TPM_ALG_ID::SHA1, b"Test data for signing".as_ref())?;
     let signature = tpm.Sign(
         &sign_key,
         &data_to_sign,
@@ -927,7 +948,7 @@ fn auth_sessions_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Loaded child key with HMAC session: {:?}", loaded_key);
 
     // Sign data with the loaded key using the session
-    let data_to_sign = Crypto::hash(TPM_ALG_ID::SHA1, &b"Auth session test data".to_vec())?;
+    let data_to_sign = Crypto::hash(TPM_ALG_ID::SHA1, b"Auth session test data".as_ref())?;
     let sig = tpm.with_session(sess.clone()).Sign(
         &loaded_key, &data_to_sign,
         &TPMU_SIG_SCHEME::create(TPM_ALG_ID::NULL)?,
@@ -1277,7 +1298,7 @@ fn policy_with_passwords_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&session_handle(&trial))?;
     println!("PolicyPassword digest: {:?}", policy_digest);
 
-    let use_auth = Crypto::hash(TPM_ALG_ID::SHA256, &b"password".to_vec())?;
+    let use_auth = Crypto::hash(TPM_ALG_ID::SHA256, b"password".as_ref())?;
     let mut hmac_handle = make_hmac_primary_with_policy(tpm, &policy_digest, &use_auth, TPM_ALG_ID::SHA256)?;
     hmac_handle.set_auth(&use_auth);
 
@@ -1311,7 +1332,7 @@ fn policy_with_passwords_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&session_handle(&trial2))?;
     println!("PolicyAuthValue digest: {:?}", policy_digest2);
 
-    let use_auth2 = Crypto::hash(TPM_ALG_ID::SHA256, &b"password2".to_vec())?;
+    let use_auth2 = Crypto::hash(TPM_ALG_ID::SHA256, b"password2".as_ref())?;
     let mut hmac_handle2 = make_hmac_primary_with_policy(tpm, &policy_digest2, &use_auth2, TPM_ALG_ID::SHA256)?;
     hmac_handle2.set_auth(&use_auth2);
 
@@ -1393,7 +1414,7 @@ fn import_duplicate_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 
     // Load the imported key and sign with it
     let imported_key = tpm.Load(&primary, &imported, &new_key.outPublic)?;
-    let data_to_sign = Crypto::hash(TPM_ALG_ID::SHA256, &b"test import".to_vec())?;
+    let data_to_sign = Crypto::hash(TPM_ALG_ID::SHA256, b"test import".as_ref())?;
     let sig = tpm.Sign(&imported_key, &data_to_sign,
                         &TPMU_SIG_SCHEME::create(TPM_ALG_ID::NULL)?,
                         &TPMT_TK_HASHCHECK::default())?;
@@ -1458,9 +1479,20 @@ fn policy_counter_timer_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
         std::thread::sleep(std::time::Duration::from_millis(1500));
     }
 
-    // Put things back the way they were
-    tpm.SetPrimaryPolicy(&TPM_HANDLE::new(TPM_RH::OWNER.get_value()),
-                          &vec![], TPM_ALG_ID::NULL)?;
+    // Put things back the way they were. Deliberately not `?` - see misc_admin_sample.
+    tpm.allow_errors();
+    let _ = tpm.SetPrimaryPolicy(
+        &TPM_HANDLE::new(TPM_RH::OWNER.get_value()),
+        &vec![],
+        TPM_ALG_ID::NULL,
+    );
+    if tpm.last_response_code() != TPM_RC::SUCCESS {
+        print_error(&format!(
+            "FAILED to clear the OWNER primary policy (rc={}). This TPM's owner hierarchy \
+             still carries the PolicyCounterTimer digest.",
+            tpm.last_response_code()
+        ));
+    }
 
     println!("PolicyCounterTimer sample completed successfully");
     Ok(())
@@ -1617,7 +1649,7 @@ fn software_keys_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Created duplicatable signing key in TPM");
 
     // Sign with the TPM key
-    let to_sign = Crypto::hash(TPM_ALG_ID::SHA256, &b"hello from software key".to_vec())?;
+    let to_sign = Crypto::hash(TPM_ALG_ID::SHA256, b"hello from software key".as_ref())?;
     let tpm_sig = tpm.Sign(&tpm_key, &to_sign,
                             &TPMU_SIG_SCHEME::create(TPM_ALG_ID::NULL)?,
                             &TPMT_TK_HASHCHECK::default())?;
@@ -2109,22 +2141,24 @@ fn policy_signed_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     let hash_alg = TPM_ALG_ID::SHA256;
 
     // Create a SW signing key
-    let mut sw_key = TSS_KEY::default();
-    sw_key.publicPart = TPMT_PUBLIC {
-        nameAlg: hash_alg,
-        objectAttributes: TPMA_OBJECT(
-            TPMA_OBJECT::sign.get_value() | TPMA_OBJECT::userWithAuth.get_value(),
-        ),
-        authPolicy: vec![],
-        parameters: Some(TPMU_PUBLIC_PARMS::rsaDetail(TPMS_RSA_PARMS {
-            symmetric: TPMT_SYM_DEF_OBJECT::default(),
-            scheme: Some(TPMU_ASYM_SCHEME::rsassa(TPMS_SIG_SCHEME_RSASSA {
-                hashAlg: hash_alg,
+    let mut sw_key = TSS_KEY {
+        publicPart: TPMT_PUBLIC {
+            nameAlg: hash_alg,
+            objectAttributes: TPMA_OBJECT(
+                TPMA_OBJECT::sign.get_value() | TPMA_OBJECT::userWithAuth.get_value(),
+            ),
+            authPolicy: vec![],
+            parameters: Some(TPMU_PUBLIC_PARMS::rsaDetail(TPMS_RSA_PARMS {
+                symmetric: TPMT_SYM_DEF_OBJECT::default(),
+                scheme: Some(TPMU_ASYM_SCHEME::rsassa(TPMS_SIG_SCHEME_RSASSA {
+                    hashAlg: hash_alg,
+                })),
+                keyBits: 2048,
+                exponent: 0,
             })),
-            keyBits: 2048,
-            exponent: 0,
-        })),
-        unique: Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA::default())),
+            unique: Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA::default())),
+        },
+        ..Default::default()
     };
     sw_key.create_key()?;
     println!("Created software RSA-2048 signing key");
@@ -2216,22 +2250,24 @@ fn policy_authorize_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     let hash_alg = TPM_ALG_ID::SHA256;
 
     // Create a software signing key (the "authorizing" key)
-    let mut sw_key = TSS_KEY::default();
-    sw_key.publicPart = TPMT_PUBLIC {
-        nameAlg: hash_alg,
-        objectAttributes: TPMA_OBJECT(
-            TPMA_OBJECT::sign.get_value() | TPMA_OBJECT::userWithAuth.get_value(),
-        ),
-        authPolicy: vec![],
-        parameters: Some(TPMU_PUBLIC_PARMS::rsaDetail(TPMS_RSA_PARMS {
-            symmetric: TPMT_SYM_DEF_OBJECT::default(),
-            scheme: Some(TPMU_ASYM_SCHEME::rsassa(TPMS_SIG_SCHEME_RSASSA {
-                hashAlg: hash_alg,
+    let mut sw_key = TSS_KEY {
+        publicPart: TPMT_PUBLIC {
+            nameAlg: hash_alg,
+            objectAttributes: TPMA_OBJECT(
+                TPMA_OBJECT::sign.get_value() | TPMA_OBJECT::userWithAuth.get_value(),
+            ),
+            authPolicy: vec![],
+            parameters: Some(TPMU_PUBLIC_PARMS::rsaDetail(TPMS_RSA_PARMS {
+                symmetric: TPMT_SYM_DEF_OBJECT::default(),
+                scheme: Some(TPMU_ASYM_SCHEME::rsassa(TPMS_SIG_SCHEME_RSASSA {
+                    hashAlg: hash_alg,
+                })),
+                keyBits: 2048,
+                exponent: 0,
             })),
-            keyBits: 2048,
-            exponent: 0,
-        })),
-        unique: Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA::default())),
+            unique: Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA::default())),
+        },
+        ..Default::default()
     };
     sw_key.create_key()?;
     println!("Created authorizing SW key");
@@ -2337,12 +2373,21 @@ fn admin_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 
     // TSS.Rust tracks changes of auth-values and updates the relevant handle.
     // Because we have the new auth-value we can continue managing the TPM.
-    // Now set it back to empty.
-    tpm.HierarchyChangeAuth(
-        &TPM_HANDLE::new(TPM_RH::OWNER.get_value()),
-        &vec![],
-    )?;
-    println!("OWNER auth reset to empty");
+    // Now set it back to empty. This must not use `?`: leaving the sample early here
+    // would strand the OWNER hierarchy on a non-empty auth value, and the recovery
+    // prologue that used to clean that up is opt-in (see the module docs).
+    tpm.allow_errors();
+    let _ = tpm.HierarchyChangeAuth(&TPM_HANDLE::new(TPM_RH::OWNER.get_value()), &vec![]);
+    if tpm.last_response_code() == TPM_RC::SUCCESS {
+        println!("OWNER auth reset to empty");
+    } else {
+        print_error(&format!(
+            "FAILED to reset OWNER auth (rc={}). This TPM's owner hierarchy is now set to \
+             SHA1(\"passw0rd\"); re-run with {} to restore it.",
+            tpm.last_response_code(),
+            RECOVER_HIERARCHIES_FLAG
+        ));
+    }
 
     // --- Demonstrate that primary keys are deterministic ---
     println!("\n>> Primary key determinism");
@@ -2574,7 +2619,7 @@ fn bound_session_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     // Always reset owner auth, even if the test failed
     tpm.allow_errors();
     let _ = tpm.HierarchyChangeAuth(&TPM_HANDLE::new(TPM_RH::OWNER.get_value()), &vec![]);
-    tpm.set_admin_auth(TPM_RH::OWNER, &vec![]);
+    tpm.set_admin_auth(TPM_RH::OWNER, &[]);
 
     result
 }
@@ -2654,6 +2699,19 @@ fn bound_session_inner(tpm: &mut Tpm2, owner_auth: &[u8]) -> Result<(), TpmError
     Ok(())
 }
 
+/// Opt-in flag for the destructive hierarchy recovery prologue. See the module docs.
+const RECOVER_HIERARCHIES_FLAG: &str = "--recover-hierarchies";
+
+fn hierarchy_recovery_requested() -> bool {
+    std::env::args().any(|arg| arg == RECOVER_HIERARCHIES_FLAG)
+}
+
+/// Clears the TPM's dictionary attack lockout.
+///
+/// Destructive on real hardware: if `lockoutAuth` is not empty, this is a failed auth
+/// attempt against it, which disables `lockoutAuth` until the lockout recovery interval
+/// elapses (24 hours on a typical Windows machine). Gated behind
+/// [`RECOVER_HIERARCHIES_FLAG`].
 fn reset_da_lockout(tpm: &mut Tpm2) {
     tpm.allow_errors();
     let _ = tpm.DictionaryAttackLockReset(&TPM_HANDLE::new(TPM_RH::LOCKOUT.get_value()));
@@ -2677,6 +2735,11 @@ fn reset_da_lockout(tpm: &mut Tpm2) {
     }
 }
 
+/// Resets the ENDORSEMENT hierarchy auth value and primary policy.
+///
+/// Destructive on real hardware: this rewrites the endorsement hierarchy outright,
+/// which can invalidate existing EK-based enrollments. Gated behind
+/// [`RECOVER_HIERARCHIES_FLAG`].
 fn recover_endorsement_hierarchy(tpm: &mut Tpm2) {
     let hash_alg = TPM_ALG_ID::SHA256;
     let endorsement_name = TPM_HANDLE::new(TPM_RH::ENDORSEMENT.get_value()).get_name().unwrap_or_default();
@@ -2699,6 +2762,12 @@ fn recover_endorsement_hierarchy(tpm: &mut Tpm2) {
     );
 }
 
+/// Restores an empty OWNER auth value after a sample left one of its known values behind.
+///
+/// Destructive on real hardware: every entry in `known_auths` that does not match is a
+/// failed auth attempt that increments the TPM's dictionary attack counter, so each run
+/// costs up to two counts even when it does nothing useful. Gated behind
+/// [`RECOVER_HIERARCHIES_FLAG`].
 fn recover_owner_hierarchy(tpm: &mut Tpm2) {
     let known_auths: Vec<Vec<u8>> = vec![
         Crypto::hash(TPM_ALG_ID::SHA1, b"passw0rd").unwrap_or_default(),
@@ -2721,23 +2790,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     device.connect()?;
     let mut tpm = create_tpm_with_device(device);
 
-    reset_da_lockout(&mut tpm);
-    recover_endorsement_hierarchy(&mut tpm);
-    recover_owner_hierarchy(&mut tpm);
+    if hierarchy_recovery_requested() {
+        print_error(&format!(
+            "{} given: running hierarchy recovery. This submits known-wrong auth values \
+             to the OWNER and LOCKOUT hierarchies and will increment this TPM's dictionary \
+             attack counter.",
+            RECOVER_HIERARCHIES_FLAG
+        ));
+        reset_da_lockout(&mut tpm);
+        recover_endorsement_hierarchy(&mut tpm);
+        recover_owner_hierarchy(&mut tpm);
+    } else {
+        println!(
+            "Skipping hierarchy recovery. Pass {} to enable it - simulator only, it feeds \
+             the TPM's dictionary attack counter on real hardware.",
+            RECOVER_HIERARCHIES_FLAG
+        );
+    }
 
-    get_capabilities(&mut tpm)?;
+    if let Err(e) = get_capabilities(&mut tpm) {
+        print_error(&format!("get_capabilities failed: {}", e));
+    }
 
     // ---- Samples ordered to match C++ RunAllSamples() ----
 
-    rand_sample(&mut tpm)?;
+    if let Err(e) = rand_sample(&mut tpm) {
+        print_error(&format!("rand_sample failed: {}", e));
+    }
     if let Err(e) = dictionary_attack_sample(&mut tpm) {
         print_error(&format!("dictionary_attack_sample failed (TPM may be in lockout): {}", e));
     }
-    hash_sample(&mut tpm)?;
+    if let Err(e) = hash_sample(&mut tpm) {
+        print_error(&format!("hash_sample failed: {}", e));
+    }
     if let Err(e) = hmac_sample(&mut tpm) {
         print_error(&format!("hmac_sample failed (may be DA lockout): {}", e));
     }
-    pcr_sample(&mut tpm)?;
+    if let Err(e) = pcr_sample(&mut tpm) {
+        print_error(&format!("pcr_sample failed (PCR_Reset is admin-only on Windows): {}", e));
+    }
     if let Err(e) = policy_locality_sample(&mut tpm) {
         print_error(&format!("policy_locality_sample failed: {}", e));
     }
@@ -2766,7 +2857,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = policy_or_sample(&mut tpm) {
         print_error(&format!("policy_or_sample failed: {}", e));
     }
-    counter_timer_sample(&mut tpm)?;
+    if let Err(e) = counter_timer_sample(&mut tpm) {
+        print_error(&format!("counter_timer_sample failed: {}", e));
+    }
     if let Err(e) = attestation(&mut tpm) {
         print_error(&format!("attestation failed: {}", e));
     }

@@ -87,20 +87,68 @@ impl TpmBuffer {
 
     pub fn getCurStuctRemainingSize(&self) -> usize {
         if let Some(ssi) = self.sized_struct_sizes.last() {
-            return ssi.size - (self.pos - ssi.start_pos);
+            return ssi
+                .size
+                .saturating_sub(self.pos.saturating_sub(ssi.start_pos));
         }
         0
     }
 
     fn check_len(&mut self, len: usize) -> bool {
-        if self.buf.len() < self.pos + len {
-            // Grow the buffer if needed on write operations
-            self.buf.resize(self.pos + len, 0);
+        self.ensure_write_len(len)
+    }
+
+    fn ensure_write_len(&mut self, len: usize) -> bool {
+        let Some(end_pos) = self.pos.checked_add(len) else {
+            self.out_of_bounds = true;
+            return false;
+        };
+
+        if self.buf.len() < end_pos {
+            self.buf.resize(end_pos, 0);
         }
         true
     }
 
+    fn check_read_len(&mut self, len: usize) -> bool {
+        let Some(end_pos) = self.pos.checked_add(len) else {
+            self.out_of_bounds = true;
+            return false;
+        };
+
+        if let Some(ssi) = self.sized_struct_sizes.last() {
+            let consumed = self.pos.saturating_sub(ssi.start_pos);
+            let remaining = ssi.size.saturating_sub(consumed);
+            if consumed > ssi.size || len > remaining {
+                self.out_of_bounds = true;
+                return false;
+            }
+        }
+
+        if self.buf.len() < end_pos {
+            self.out_of_bounds = true;
+            return false;
+        }
+        true
+    }
+
+    fn remaining_len(&self) -> usize {
+        self.buf.len().saturating_sub(self.pos)
+    }
+
+    pub fn check_status(&self) -> Result<(), TpmError> {
+        if self.isOk() {
+            Ok(())
+        } else {
+            Err(TpmError::BufferUnderflow)
+        }
+    }
+
     pub fn write_num(&mut self, val: u64, len: usize) {
+        if len == 0 {
+            return;
+        }
+
         if !self.check_len(len) {
             return;
         }
@@ -130,7 +178,11 @@ impl TpmBuffer {
     }
 
     pub fn read_num(&mut self, len: usize) -> u64 {
-        if !self.check_len(len) {
+        if len == 0 {
+            return 0;
+        }
+
+        if !self.check_read_len(len) {
             return 0;
         }
 
@@ -155,7 +207,7 @@ impl TpmBuffer {
             res += (self.buf[self.pos] as u64) << 8;
             self.pos += 1;
         }
-        res += (self.buf[self.pos] as u8) as u64;
+        res += self.buf[self.pos] as u64;
         self.pos += 1;
         res
     }
@@ -192,7 +244,7 @@ impl TpmBuffer {
 
     /** Reads a byte from this buffer. */
     pub fn readByte(&mut self) -> u8 {
-        if self.check_len(1) {
+        if self.check_read_len(1) {
             let val = self.buf[self.pos];
             self.pos += 1;
             return val;
@@ -216,22 +268,25 @@ impl TpmBuffer {
     }
 
     /** Marshalls the given byte buffer with no length prefix. */
-    pub fn writeByteBuf(&mut self, data: &Vec<u8>) {
+    pub fn writeByteBuf(&mut self, data: &[u8]) {
         let data_size = data.len();
         if data_size == 0 || !self.check_len(data_size) {
             return;
         }
-        for i in 0..data_size {
-            self.buf[self.pos + i] = data[i];
-        }
+        self.buf[self.pos..self.pos + data_size].copy_from_slice(data);
         self.pos += data_size;
     }
 
     /** Unmarshalls a byte buffer of the given size (no marshaled length prefix). */
     pub fn readByteBuf(&mut self, size: usize) -> Vec<u8> {
-        if !self.check_len(size) {
-            return Vec::new().into();
+        if size == 0 {
+            return Vec::new();
         }
+
+        if !self.check_read_len(size) {
+            return Vec::new();
+        }
+
         let mut new_buf = Vec::with_capacity(size);
         for i in 0..size {
             new_buf.push(self.buf[self.pos + i]);
@@ -241,7 +296,7 @@ impl TpmBuffer {
     }
 
     /** Marshalls the given byte buffer with a length prefix. */
-    pub fn writeSizedByteBuf(&mut self, data: &Vec<u8>, size_len: usize) {
+    pub fn writeSizedByteBuf(&mut self, data: &[u8], size_len: usize) {
         self.write_num(data.len() as u64, size_len);
         self.writeByteBuf(data);
     }
@@ -249,12 +304,16 @@ impl TpmBuffer {
     /** Unmarshals a byte buffer from its size-prefixed representation in the TPM wire format. */
     pub fn readSizedByteBuf(&mut self, size_len: usize) -> Vec<u8> {
         let size = self.read_num(size_len) as usize;
+        if !self.isOk() {
+            return Vec::new();
+        }
         self.readByteBuf(size)
     }
 
     pub fn createObj<T: TpmMarshaller + Default>(&mut self) -> Result<T, TpmError> {
         let mut new_obj = T::default();
         new_obj.initFromTpm(self)?;
+        self.check_status()?;
         Ok(new_obj)
     }
 
@@ -285,18 +344,33 @@ impl TpmBuffer {
         obj: &mut T,
     ) -> Result<(), TpmError> {
         let size = self.readShort();
+        if !self.isOk() {
+            return Err(TpmError::BufferUnderflow);
+        }
         if size == 0 {
             return Ok(());
         }
 
+        if size as usize > self.remaining_len() {
+            self.out_of_bounds = true;
+            return Err(TpmError::BufferUnderflow);
+        }
+
+        let end_pos = self.pos + size as usize;
         self.sized_struct_sizes.push(SizedStructInfo {
             start_pos: self.pos,
             size: size as usize,
         });
 
-        obj.initFromTpm(self)?;
+        let result = obj.initFromTpm(self);
 
         self.sized_struct_sizes.pop();
+        result?;
+        self.check_status()?;
+        if self.pos != end_pos {
+            self.out_of_bounds = true;
+            return Err(TpmError::BufferUnderflow);
+        }
         Ok(())
     }
 
@@ -317,11 +391,21 @@ impl TpmBuffer {
         arr: &mut Vec<T>,
     ) -> Result<(), TpmError> {
         let len = self.readInt();
+        if !self.isOk() {
+            return Err(TpmError::BufferUnderflow);
+        }
         if len == 0 {
-            return Ok(arr.clear());
+            arr.clear();
+            return Ok(());
         }
 
-        arr.resize_with(len as usize, T::default);
+        let len = len as usize;
+        if len > self.remaining_len() {
+            self.out_of_bounds = true;
+            return Err(TpmError::BufferUnderflow);
+        }
+
+        arr.resize_with(len, T::default);
         for elt in arr {
             if !self.isOk() {
                 break;
@@ -329,7 +413,7 @@ impl TpmBuffer {
             elt.initFromTpm(self)?;
         }
 
-        Ok(())
+        self.check_status()
     }
 
     pub fn writeValArr<T, U>(&mut self, arr: &[T], val_size: usize)
@@ -354,11 +438,25 @@ impl TpmBuffer {
     {
         // Length of the array size is always 4 bytes
         let len = self.readInt();
+        if !self.isOk() {
+            return Err(TpmError::BufferUnderflow);
+        }
         if len == 0 {
-            return Ok(arr.clear());
+            arr.clear();
+            return Ok(());
         }
 
-        arr.resize_with(len as usize, Default::default);
+        let len = len as usize;
+        let Some(byte_len) = len.checked_mul(val_size) else {
+            self.out_of_bounds = true;
+            return Err(TpmError::BufferUnderflow);
+        };
+        if val_size == 0 || byte_len > self.remaining_len() {
+            self.out_of_bounds = true;
+            return Err(TpmError::BufferUnderflow);
+        }
+
+        arr.resize_with(len, Default::default);
 
         for elt in arr {
             if !self.isOk() {
@@ -368,6 +466,47 @@ impl TpmBuffer {
             *elt = T::new_from_trait((self.read_num(val_size) as u32).into())?;
         }
 
-        Ok(())
+        self.check_status()
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tpm_structure::TpmStructure;
+    use crate::tpm_types::{TPM2B_DIGEST, TPM_HANDLE};
+
+    #[test]
+    fn create_obj_rejects_zero_length_input() {
+        let mut buffer = TpmBuffer::from(&[]);
+
+        assert!(matches!(
+            buffer.createObj::<TPM_HANDLE>(),
+            Err(TpmError::BufferUnderflow)
+        ));
+        assert_eq!(buffer.size(), 0);
+        assert_eq!(buffer.current_pos(), 0);
+    }
+
+    #[test]
+    fn from_bytes_rejects_truncated_input() {
+        let mut bytes = vec![0x12, 0x34];
+        let mut handle = TPM_HANDLE::default();
+
+        assert!(matches!(
+            handle.fromBytes(&mut bytes),
+            Err(TpmError::BufferUnderflow)
+        ));
+    }
+
+    #[test]
+    fn sized_byte_buffer_rejects_length_larger_than_remaining_input() {
+        let mut buffer = TpmBuffer::from(&[0x00, 0x04, 0xAA]);
+
+        assert!(matches!(
+            buffer.createObj::<TPM2B_DIGEST>(),
+            Err(TpmError::BufferUnderflow)
+        ));
+        assert_eq!(buffer.size(), 3);
+        assert_eq!(buffer.current_pos(), 2);
     }
 }

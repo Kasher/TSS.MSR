@@ -5,10 +5,31 @@ use crate::tpm_buffer::*;
 use crate::tpm_structure::TpmEnum;
 use crate::tpm_types::CertifyResponse;
 use crate::tpm_types::*;
-use rsa::{BigUint, RsaPublicKey, RsaPrivateKey, Oaep, Pkcs1v15Sign};
+use rsa::{BigUint, RsaPublicKey, RsaPrivateKey, Oaep};
 use rsa::traits::{PublicKeyParts, PrivateKeyParts};
 use rand::rngs::OsRng;
 use zeroize::Zeroize;
+
+/// RSA-OAEP encrypt using the hash algorithm matching the key's nameAlg.
+fn rsa_oaep_encrypt(
+    rsa_key: &RsaPublicKey,
+    name_alg: TPM_ALG_ID,
+    label: &str,
+    data: &[u8],
+) -> Result<Vec<u8>, TpmError> {
+    match name_alg {
+        TPM_ALG_ID::SHA1 => rsa_key
+            .encrypt(&mut OsRng, Oaep::new_with_label::<sha1::Sha1, _>(label), data)
+            .map_err(|e| TpmError::GenericError(format!("RSA-OAEP encryption failed: {e}"))),
+        TPM_ALG_ID::SHA256 => rsa_key
+            .encrypt(&mut OsRng, Oaep::new_with_label::<sha2::Sha256, _>(label), data)
+            .map_err(|e| TpmError::GenericError(format!("RSA-OAEP encryption failed: {e}"))),
+        _ => Err(TpmError::NotSupported(format!(
+            "Unsupported nameAlg for OAEP: {:?}",
+            name_alg
+        ))),
+    }
+}
 
 /// Activation data returned from create_activation
 #[derive(Debug)]
@@ -56,7 +77,16 @@ impl TPMT_PUBLIC {
         nonce: &[u8],
         certify_response: &CertifyResponse,
     ) -> Result<bool, TpmError> {
-        let hash_alg = self.get_signing_hash_alg()?;
+        let key_hash_alg = self.get_signing_hash_alg()?;
+        let signature_hash_alg = if let Some(TPMU_SIGNATURE::rsassa(signature)) = &certify_response.signature {
+            signature.hash
+        } else {
+            return Crypto::validate_signature(self, Vec::new(), &certify_response.signature);
+        };
+        if key_hash_alg != signature_hash_alg {
+            return Ok(false);
+        }
+
         let attest = &certify_response.certifyInfo;
 
         if (attest.extraData != nonce) {
@@ -82,7 +112,7 @@ impl TPMT_PUBLIC {
             buffer.trim().to_vec()
         };
 
-        let signed_blob_hash = Crypto::hash(hash_alg, &signed_blob)?;
+        let signed_blob_hash = Crypto::hash(signature_hash_alg, &signed_blob)?;
 
         Crypto::validate_signature(self, signed_blob_hash, &certify_response.signature)
     }
@@ -127,11 +157,8 @@ impl TPMT_PUBLIC {
             BigUint::from_bytes_be(&[1, 0, 1]) // e = 65537
         ).map_err(|_| TpmError::GenericError("Invalid RSA parameters".to_string()))?;
 
-        // Encrypt seed with label "IDENTITY" using OAEP-SHA1
-        let padding = Oaep::new_with_label::<sha1::Sha1, _>("IDENTITY\0");
-        let secret = rsa_public_key
-            .encrypt(&mut OsRng, padding, &seed)
-            .map_err(|_| TpmError::GenericError("Failed to encrypt seed".to_string()))?;
+        // Encrypt seed with label "IDENTITY" using OAEP with the key's nameAlg
+        let secret = rsa_oaep_encrypt(&rsa_public_key, self.nameAlg, "IDENTITY\0", &seed)?;
 
         // Make the credential blob:
 
@@ -154,7 +181,7 @@ impl TPMT_PUBLIC {
         let enc_credential = Crypto::cfb_xcrypt(
             true,
             &sym_key,
-            &vec![0u8; 16], // Zero IV
+            &[0u8; 16], // Zero IV
             &credential_with_size
         )?;
 
@@ -223,11 +250,8 @@ impl TPMT_PUBLIC {
             BigUint::from_bytes_be(&[1, 0, 1]) // e = 65537
         ).map_err(|_| TpmError::InvalidArraySize("Invalid RSA parameters".to_string()))?;
 
-        // Encrypt the data using OAEP padding with SHA-1 hash function
-        let padding = Oaep::new_with_label::<sha1::Sha1, _>("IDENTITY\0");
-        let encrypted_data = rsa_public_key
-            .encrypt(&mut OsRng, padding, data)
-            .map_err(|_| TpmError::GenericError("Failed to encrypt data".to_string()))?;
+        // Encrypt the data using OAEP padding with the key's nameAlg
+        let encrypted_data = rsa_oaep_encrypt(&rsa_public_key, self.nameAlg, "IDENTITY\0", data)?;
 
         Ok(encrypted_data)
     }
@@ -328,7 +352,6 @@ impl TPM_HANDLE {
 
         if (handle_type == TPM_HT::NV_INDEX
             || handle_type == TPM_HT::TRANSIENT
-            || handle_type == TPM_HT::PERSISTENT
             || handle_type == TPM_HT::PERSISTENT)
         {
             self.name = name.to_vec();
@@ -375,10 +398,12 @@ impl TPM_HANDLE {
             handle_type
         )))
     }
+}
 
+impl std::fmt::Display for TPM_HANDLE {
     /// Get a string representation of this handle
-    pub fn to_string(&self) -> String {
-        format!("{}:0x{:x}", self.get_type(), self.handle)
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:0x{:x}", self.get_type(), self.handle)
     }
 }
 
@@ -430,14 +455,7 @@ impl TSS_KEY {
         let priv_key = RsaPrivateKey::from_p_q(p, q, e)
             .map_err(|e| TpmError::GenericError(format!("Failed to reconstruct RSA key: {}", e)))?;
 
-        // Sign with PKCS#1 v1.5
-        let scheme = match hash_alg {
-            TPM_ALG_ID::SHA1 => Pkcs1v15Sign::new::<sha1::Sha1>(),
-            TPM_ALG_ID::SHA256 => Pkcs1v15Sign::new::<sha2::Sha256>(),
-            _ => return Err(TpmError::GenericError(format!("Unsupported hash algorithm for signing: {:?}", hash_alg))),
-        };
-
-        let sig_bytes = priv_key.sign(scheme, digest)
+        let sig_bytes = priv_key.sign(Crypto::pkcs1v15_sign_scheme(hash_alg)?, digest)
             .map_err(|e| TpmError::GenericError(format!("RSA signing failed: {}", e)))?;
 
         Ok(TPMT_SIGNATURE {

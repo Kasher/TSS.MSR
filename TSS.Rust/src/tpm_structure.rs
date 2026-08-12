@@ -15,10 +15,26 @@ use crate::tpm_types::*;
 pub trait TpmStructure: TpmMarshaller {
     fn serialize(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError>;
     fn deserialize(&mut self, buffer: &mut TpmBuffer) -> Result<(), TpmError>;
+
+    /// Unmarshals this object in place from the TPM wire representation contained in the
+    /// given buffer, and fails if the buffer did not hold a complete representation.
+    ///
+    /// Note that this populates `self`; use [`TpmBuffer::createObj`] to build a new object
+    /// instead.
     #[allow(non_snake_case)]
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError>;
+    fn fromTpm(&mut self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
+        self.initFromTpm(buffer)?;
+        buffer.check_status()
+    }
+
+    /// Unmarshals this object in place from its TPM wire representation contained in the
+    /// given byte vector, and fails if the vector did not hold a complete representation.
     #[allow(non_snake_case)]
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError>;
+    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
+        let mut tpm_buffer = TpmBuffer::from(buffer);
+        self.initFromTpm(&mut tpm_buffer)?;
+        tpm_buffer.check_status()
+    }
 }
 
 /// Common trait for all TPM enumeration types
@@ -105,5 +121,48 @@ pub trait RespStructure: CmdStructure {
     /// <summary> Serializable method </summary>
     fn type_name(&self) -> String {
         "RespStructure".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_tpm_populates_existing_receiver() -> Result<(), TpmError> {
+        let expected_attributes = TPMA_OBJECT(
+            TPMA_OBJECT::fixedTPM.0 | TPMA_OBJECT::userWithAuth.0 | TPMA_OBJECT::sign.0,
+        );
+        let public = TPMT_PUBLIC {
+            nameAlg: TPM_ALG_ID::SHA256,
+            objectAttributes: expected_attributes,
+            authPolicy: vec![1, 2, 3],
+            parameters: Some(TPMU_PUBLIC_PARMS::rsaDetail(TPMS_RSA_PARMS {
+                symmetric: TPMT_SYM_DEF_OBJECT::default(),
+                scheme: Some(TPMU_ASYM_SCHEME::null(TPMS_NULL_ASYM_SCHEME::default())),
+                keyBits: 2048,
+                exponent: 0,
+            })),
+            unique: Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA {
+                buffer: vec![0xA5; 256],
+            })),
+        };
+
+        let mut out = TpmBuffer::new(None);
+        public.toTpm(&mut out)?;
+        let serialized = out.trim().clone();
+        let mut input = TpmBuffer::from(serialized.as_slice());
+        let mut parsed = TPMT_PUBLIC::default();
+
+        parsed.fromTpm(&mut input)?;
+
+        assert_eq!(parsed.nameAlg, public.nameAlg);
+        assert_eq!(parsed.objectAttributes.0, expected_attributes.0);
+        assert_eq!(parsed.authPolicy, public.authPolicy);
+        match parsed.unique {
+            Some(TPMU_PUBLIC_ID::rsa(unique)) => assert_eq!(unique.buffer, vec![0xA5; 256]),
+            _ => panic!("expected RSA public unique field"),
+        }
+        Ok(())
     }
 }

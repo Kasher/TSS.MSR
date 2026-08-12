@@ -71,6 +71,9 @@ impl Session {
     }
 
     /// Create a fully initialized HMAC or policy session from a TPM StartAuthSession response.
+    // The parameter list mirrors the TPM2_StartAuthSession response fields; grouping them into a
+    // struct would just move the same values behind another type.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_tpm_response(
         session_handle: TPM_HANDLE,
         session_type: TPM_SE,
