@@ -14,11 +14,13 @@ namespace CodeGen
     /// <summary> Rust TSS code generator </summary>
     internal class CGenRust : CodeGenBase
     {
+        // Note that TpmStructure::fromTpm() and fromBytes() are deliberately not generated.
+        // Their bodies are type independent (they only forward to TpmMarshaller::initFromTpm(),
+        // which is dispatched dynamically), so they are implemented once as default methods of
+        // the TpmStructure trait in the handwritten src/tpm_structure.rs.
         static readonly (string, string)[] TpmStructureFunctions = new (string, string)[] {
             ("serialize", "(&self, buffer: &mut TpmBuffer)"),
             ("deserialize", "(&mut self, buffer: &mut TpmBuffer)"),
-            ("fromTpm", "(&self, buffer: &mut TpmBuffer)"),
-            ("fromBytes", "(&mut self, buffer: &mut Vec<u8>)"),
         };
 
         // Maps enum type to a map of enumerator names to values
@@ -566,15 +568,7 @@ namespace CodeGen
             // Marshaling methods
             TabIn($"impl TpmStructure for {s.Name} {{");
 
-            TabIn("fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {");
-            Write($"buffer.createObj::<{s.Name}>()?;");
-            Write("Ok(())");
-            TabOut("}");
-
-            TabIn("fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {");
-            Write("let mut tpm_buffer = TpmBuffer::from(buffer);");
-            Write($"self.initFromTpm(&mut tpm_buffer)");
-            TabOut("}");
+            // fromTpm() and fromBytes() come from the TpmStructure trait default methods.
 
             GenStructMarshalingImpl(s);
 

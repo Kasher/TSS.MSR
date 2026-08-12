@@ -19,6 +19,21 @@
     non_upper_case_globals,
     dead_code
 )]
+// Everything below the <<AUTOGEN_BEGIN>> marker is emitted by TssCodeGen from the TPM 2.0
+// specification tables, so these lints cannot be fixed here - a hand edit would be lost on the
+// next regeneration. Two of them are also not fixable in the generator without breaking the
+// public API: `ptr_arg` would change every `&Vec<u8>` parameter, and `too_many_arguments` is
+// dictated by the TPM command signatures themselves. The rest are cosmetic artifacts of
+// uniform code emission. Listed individually rather than blanket-allowing `clippy::all`, so a
+// new class of lint in generated code still surfaces.
+#![allow(
+    clippy::clone_on_copy,
+    clippy::needless_update,
+    clippy::ptr_arg,
+    clippy::too_many_arguments,
+    clippy::unnecessary_cast,
+    clippy::useless_conversion
+)]
 
 //! TPM type definitions
 
@@ -6325,38 +6340,6 @@ impl TpmStructure for TPMU_CAPABILITIES {
         }
     }
 
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        match self {
-            Self::algorithms(inner) => inner.fromTpm(buffer),
-            Self::handles(inner) => inner.fromTpm(buffer),
-            Self::command(inner) => inner.fromTpm(buffer),
-            Self::ppCommands(inner) => inner.fromTpm(buffer),
-            Self::auditCommands(inner) => inner.fromTpm(buffer),
-            Self::assignedPCR(inner) => inner.fromTpm(buffer),
-            Self::tpmProperties(inner) => inner.fromTpm(buffer),
-            Self::pcrProperties(inner) => inner.fromTpm(buffer),
-            Self::eccCurves(inner) => inner.fromTpm(buffer),
-            Self::authPolicies(inner) => inner.fromTpm(buffer),
-            Self::actData(inner) => inner.fromTpm(buffer),
-        }
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        match self {
-            Self::algorithms(inner) => inner.fromBytes(buffer),
-            Self::handles(inner) => inner.fromBytes(buffer),
-            Self::command(inner) => inner.fromBytes(buffer),
-            Self::ppCommands(inner) => inner.fromBytes(buffer),
-            Self::auditCommands(inner) => inner.fromBytes(buffer),
-            Self::assignedPCR(inner) => inner.fromBytes(buffer),
-            Self::tpmProperties(inner) => inner.fromBytes(buffer),
-            Self::pcrProperties(inner) => inner.fromBytes(buffer),
-            Self::eccCurves(inner) => inner.fromBytes(buffer),
-            Self::authPolicies(inner) => inner.fromBytes(buffer),
-            Self::actData(inner) => inner.fromBytes(buffer),
-        }
-    }
-
 }
 
 impl TpmMarshaller for TPMU_CAPABILITIES {
@@ -6481,32 +6464,6 @@ impl TpmStructure for TPMU_ATTEST {
         }
     }
 
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        match self {
-            Self::certify(inner) => inner.fromTpm(buffer),
-            Self::creation(inner) => inner.fromTpm(buffer),
-            Self::quote(inner) => inner.fromTpm(buffer),
-            Self::commandAudit(inner) => inner.fromTpm(buffer),
-            Self::sessionAudit(inner) => inner.fromTpm(buffer),
-            Self::time(inner) => inner.fromTpm(buffer),
-            Self::nv(inner) => inner.fromTpm(buffer),
-            Self::nvDigest(inner) => inner.fromTpm(buffer),
-        }
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        match self {
-            Self::certify(inner) => inner.fromBytes(buffer),
-            Self::creation(inner) => inner.fromBytes(buffer),
-            Self::quote(inner) => inner.fromBytes(buffer),
-            Self::commandAudit(inner) => inner.fromBytes(buffer),
-            Self::sessionAudit(inner) => inner.fromBytes(buffer),
-            Self::time(inner) => inner.fromBytes(buffer),
-            Self::nv(inner) => inner.fromBytes(buffer),
-            Self::nvDigest(inner) => inner.fromBytes(buffer),
-        }
-    }
-
 }
 
 impl TpmMarshaller for TPMU_ATTEST {
@@ -6619,30 +6576,6 @@ impl TpmStructure for TPMU_SYM_DETAILS {
         }
     }
 
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        match self {
-            Self::tdes(inner) => inner.fromTpm(buffer),
-            Self::aes(inner) => inner.fromTpm(buffer),
-            Self::sm4(inner) => inner.fromTpm(buffer),
-            Self::camellia(inner) => inner.fromTpm(buffer),
-            Self::sym(inner) => inner.fromTpm(buffer),
-            Self::xor(inner) => inner.fromTpm(buffer),
-            Self::null(inner) => inner.fromTpm(buffer),
-        }
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        match self {
-            Self::tdes(inner) => inner.fromBytes(buffer),
-            Self::aes(inner) => inner.fromBytes(buffer),
-            Self::sm4(inner) => inner.fromBytes(buffer),
-            Self::camellia(inner) => inner.fromBytes(buffer),
-            Self::sym(inner) => inner.fromBytes(buffer),
-            Self::xor(inner) => inner.fromBytes(buffer),
-            Self::null(inner) => inner.fromBytes(buffer),
-        }
-    }
-
 }
 
 impl TpmMarshaller for TPMU_SYM_DETAILS {
@@ -6723,20 +6656,6 @@ impl TpmStructure for TPMU_SENSITIVE_CREATE {
         }
     }
 
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        match self {
-            Self::create => Ok(()),
-            Self::derive(inner) => inner.fromTpm(buffer),
-        }
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        match self {
-            Self::create => Ok(()),
-            Self::derive(inner) => inner.fromBytes(buffer),
-        }
-    }
-
 }
 
 impl TpmMarshaller for TPMU_SENSITIVE_CREATE {
@@ -6808,22 +6727,6 @@ impl TpmStructure for TPMU_SCHEME_KEYEDHASH {
             Self::hmac(inner) => inner.deserialize(buffer),
             Self::xor(inner) => inner.deserialize(buffer),
             Self::null(inner) => inner.deserialize(buffer),
-        }
-    }
-
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        match self {
-            Self::hmac(inner) => inner.fromTpm(buffer),
-            Self::xor(inner) => inner.fromTpm(buffer),
-            Self::null(inner) => inner.fromTpm(buffer),
-        }
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        match self {
-            Self::hmac(inner) => inner.fromBytes(buffer),
-            Self::xor(inner) => inner.fromBytes(buffer),
-            Self::null(inner) => inner.fromBytes(buffer),
         }
     }
 
@@ -6941,34 +6844,6 @@ impl TpmStructure for TPMU_SIG_SCHEME {
         }
     }
 
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        match self {
-            Self::rsassa(inner) => inner.fromTpm(buffer),
-            Self::rsapss(inner) => inner.fromTpm(buffer),
-            Self::ecdsa(inner) => inner.fromTpm(buffer),
-            Self::ecdaa(inner) => inner.fromTpm(buffer),
-            Self::sm2(inner) => inner.fromTpm(buffer),
-            Self::ecschnorr(inner) => inner.fromTpm(buffer),
-            Self::hmac(inner) => inner.fromTpm(buffer),
-            Self::any(inner) => inner.fromTpm(buffer),
-            Self::null(inner) => inner.fromTpm(buffer),
-        }
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        match self {
-            Self::rsassa(inner) => inner.fromBytes(buffer),
-            Self::rsapss(inner) => inner.fromBytes(buffer),
-            Self::ecdsa(inner) => inner.fromBytes(buffer),
-            Self::ecdaa(inner) => inner.fromBytes(buffer),
-            Self::sm2(inner) => inner.fromBytes(buffer),
-            Self::ecschnorr(inner) => inner.fromBytes(buffer),
-            Self::hmac(inner) => inner.fromBytes(buffer),
-            Self::any(inner) => inner.fromBytes(buffer),
-            Self::null(inner) => inner.fromBytes(buffer),
-        }
-    }
-
 }
 
 impl TpmMarshaller for TPMU_SIG_SCHEME {
@@ -7073,28 +6948,6 @@ impl TpmStructure for TPMU_KDF_SCHEME {
             Self::kdf1_sp800_108(inner) => inner.deserialize(buffer),
             Self::anyKdf(inner) => inner.deserialize(buffer),
             Self::null(inner) => inner.deserialize(buffer),
-        }
-    }
-
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        match self {
-            Self::mgf1(inner) => inner.fromTpm(buffer),
-            Self::kdf1_sp800_56a(inner) => inner.fromTpm(buffer),
-            Self::kdf2(inner) => inner.fromTpm(buffer),
-            Self::kdf1_sp800_108(inner) => inner.fromTpm(buffer),
-            Self::anyKdf(inner) => inner.fromTpm(buffer),
-            Self::null(inner) => inner.fromTpm(buffer),
-        }
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        match self {
-            Self::mgf1(inner) => inner.fromBytes(buffer),
-            Self::kdf1_sp800_56a(inner) => inner.fromBytes(buffer),
-            Self::kdf2(inner) => inner.fromBytes(buffer),
-            Self::kdf1_sp800_108(inner) => inner.fromBytes(buffer),
-            Self::anyKdf(inner) => inner.fromBytes(buffer),
-            Self::null(inner) => inner.fromBytes(buffer),
         }
     }
 
@@ -7239,40 +7092,6 @@ impl TpmStructure for TPMU_ASYM_SCHEME {
         }
     }
 
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        match self {
-            Self::ecdh(inner) => inner.fromTpm(buffer),
-            Self::ecmqv(inner) => inner.fromTpm(buffer),
-            Self::rsassa(inner) => inner.fromTpm(buffer),
-            Self::rsapss(inner) => inner.fromTpm(buffer),
-            Self::ecdsa(inner) => inner.fromTpm(buffer),
-            Self::ecdaa(inner) => inner.fromTpm(buffer),
-            Self::sm2(inner) => inner.fromTpm(buffer),
-            Self::ecschnorr(inner) => inner.fromTpm(buffer),
-            Self::rsaes(inner) => inner.fromTpm(buffer),
-            Self::oaep(inner) => inner.fromTpm(buffer),
-            Self::anySig(inner) => inner.fromTpm(buffer),
-            Self::null(inner) => inner.fromTpm(buffer),
-        }
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        match self {
-            Self::ecdh(inner) => inner.fromBytes(buffer),
-            Self::ecmqv(inner) => inner.fromBytes(buffer),
-            Self::rsassa(inner) => inner.fromBytes(buffer),
-            Self::rsapss(inner) => inner.fromBytes(buffer),
-            Self::ecdsa(inner) => inner.fromBytes(buffer),
-            Self::ecdaa(inner) => inner.fromBytes(buffer),
-            Self::sm2(inner) => inner.fromBytes(buffer),
-            Self::ecschnorr(inner) => inner.fromBytes(buffer),
-            Self::rsaes(inner) => inner.fromBytes(buffer),
-            Self::oaep(inner) => inner.fromBytes(buffer),
-            Self::anySig(inner) => inner.fromBytes(buffer),
-            Self::null(inner) => inner.fromBytes(buffer),
-        }
-    }
-
 }
 
 impl TpmMarshaller for TPMU_ASYM_SCHEME {
@@ -7407,34 +7226,6 @@ impl TpmStructure for TPMU_SIGNATURE {
         }
     }
 
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        match self {
-            Self::rsassa(inner) => inner.fromTpm(buffer),
-            Self::rsapss(inner) => inner.fromTpm(buffer),
-            Self::ecdsa(inner) => inner.fromTpm(buffer),
-            Self::ecdaa(inner) => inner.fromTpm(buffer),
-            Self::sm2(inner) => inner.fromTpm(buffer),
-            Self::ecschnorr(inner) => inner.fromTpm(buffer),
-            Self::hmac(inner) => inner.fromTpm(buffer),
-            Self::any(inner) => inner.fromTpm(buffer),
-            Self::null(inner) => inner.fromTpm(buffer),
-        }
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        match self {
-            Self::rsassa(inner) => inner.fromBytes(buffer),
-            Self::rsapss(inner) => inner.fromBytes(buffer),
-            Self::ecdsa(inner) => inner.fromBytes(buffer),
-            Self::ecdaa(inner) => inner.fromBytes(buffer),
-            Self::sm2(inner) => inner.fromBytes(buffer),
-            Self::ecschnorr(inner) => inner.fromBytes(buffer),
-            Self::hmac(inner) => inner.fromBytes(buffer),
-            Self::any(inner) => inner.fromBytes(buffer),
-            Self::null(inner) => inner.fromBytes(buffer),
-        }
-    }
-
 }
 
 impl TpmMarshaller for TPMU_SIGNATURE {
@@ -7536,26 +7327,6 @@ impl TpmStructure for TPMU_PUBLIC_ID {
         }
     }
 
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        match self {
-            Self::keyedHash(inner) => inner.fromTpm(buffer),
-            Self::sym(inner) => inner.fromTpm(buffer),
-            Self::rsa(inner) => inner.fromTpm(buffer),
-            Self::ecc(inner) => inner.fromTpm(buffer),
-            Self::derive(inner) => inner.fromTpm(buffer),
-        }
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        match self {
-            Self::keyedHash(inner) => inner.fromBytes(buffer),
-            Self::sym(inner) => inner.fromBytes(buffer),
-            Self::rsa(inner) => inner.fromBytes(buffer),
-            Self::ecc(inner) => inner.fromBytes(buffer),
-            Self::derive(inner) => inner.fromBytes(buffer),
-        }
-    }
-
 }
 
 impl TpmMarshaller for TPMU_PUBLIC_ID {
@@ -7648,26 +7419,6 @@ impl TpmStructure for TPMU_PUBLIC_PARMS {
             Self::rsaDetail(inner) => inner.deserialize(buffer),
             Self::eccDetail(inner) => inner.deserialize(buffer),
             Self::asymDetail(inner) => inner.deserialize(buffer),
-        }
-    }
-
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        match self {
-            Self::keyedHashDetail(inner) => inner.fromTpm(buffer),
-            Self::symDetail(inner) => inner.fromTpm(buffer),
-            Self::rsaDetail(inner) => inner.fromTpm(buffer),
-            Self::eccDetail(inner) => inner.fromTpm(buffer),
-            Self::asymDetail(inner) => inner.fromTpm(buffer),
-        }
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        match self {
-            Self::keyedHashDetail(inner) => inner.fromBytes(buffer),
-            Self::symDetail(inner) => inner.fromBytes(buffer),
-            Self::rsaDetail(inner) => inner.fromBytes(buffer),
-            Self::eccDetail(inner) => inner.fromBytes(buffer),
-            Self::asymDetail(inner) => inner.fromBytes(buffer),
         }
     }
 
@@ -7764,26 +7515,6 @@ impl TpmStructure for TPMU_SENSITIVE_COMPOSITE {
         }
     }
 
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        match self {
-            Self::rsa(inner) => inner.fromTpm(buffer),
-            Self::ecc(inner) => inner.fromTpm(buffer),
-            Self::bits(inner) => inner.fromTpm(buffer),
-            Self::sym(inner) => inner.fromTpm(buffer),
-            Self::any(inner) => inner.fromTpm(buffer),
-        }
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        match self {
-            Self::rsa(inner) => inner.fromBytes(buffer),
-            Self::ecc(inner) => inner.fromBytes(buffer),
-            Self::bits(inner) => inner.fromBytes(buffer),
-            Self::sym(inner) => inner.fromBytes(buffer),
-            Self::any(inner) => inner.fromBytes(buffer),
-        }
-    }
-
 }
 
 impl TpmMarshaller for TPMU_SENSITIVE_COMPOSITE {
@@ -7838,16 +7569,6 @@ impl TPM_HANDLE {
 }
 
 impl TpmStructure for TPM_HANDLE {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM_HANDLE>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -7892,16 +7613,6 @@ impl TPMS_NULL_UNION {
 }
 
 impl TpmStructure for TPMS_NULL_UNION {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_NULL_UNION>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -7943,16 +7654,6 @@ impl TPMS_EMPTY {
 }
 
 impl TpmStructure for TPMS_EMPTY {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_EMPTY>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -8007,16 +7708,6 @@ impl TPMS_ALGORITHM_DESCRIPTION {
 }
 
 impl TpmStructure for TPMS_ALGORITHM_DESCRIPTION {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_ALGORITHM_DESCRIPTION>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -8083,16 +7774,6 @@ impl TPMT_HA {
 }
 
 impl TpmStructure for TPMT_HA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_HA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -8149,16 +7830,6 @@ impl TPM2B_DIGEST {
 }
 
 impl TpmStructure for TPM2B_DIGEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_DIGEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -8209,16 +7880,6 @@ impl TPM2B_DATA {
 }
 
 impl TpmStructure for TPM2B_DATA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_DATA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -8285,16 +7946,6 @@ impl TPM2B_EVENT {
 }
 
 impl TpmStructure for TPM2B_EVENT {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_EVENT>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -8346,16 +7997,6 @@ impl TPM2B_MAX_BUFFER {
 }
 
 impl TpmStructure for TPM2B_MAX_BUFFER {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_MAX_BUFFER>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -8408,16 +8049,6 @@ impl TPM2B_MAX_NV_BUFFER {
 }
 
 impl TpmStructure for TPM2B_MAX_NV_BUFFER {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_MAX_NV_BUFFER>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -8469,16 +8100,6 @@ impl TPM2B_TIMEOUT {
 }
 
 impl TpmStructure for TPM2B_TIMEOUT {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_TIMEOUT>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -8531,16 +8152,6 @@ impl TPM2B_IV {
 }
 
 impl TpmStructure for TPM2B_IV {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_IV>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -8591,16 +8202,6 @@ impl TPM2B_NAME {
 }
 
 impl TpmStructure for TPM2B_NAME {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_NAME>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -8651,16 +8252,6 @@ impl TPMS_PCR_SELECT {
 }
 
 impl TpmStructure for TPMS_PCR_SELECT {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_PCR_SELECT>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -8717,16 +8308,6 @@ impl TPMS_PCR_SELECTION {
 }
 
 impl TpmStructure for TPMS_PCR_SELECTION {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_PCR_SELECTION>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -8786,16 +8367,6 @@ impl TPMT_TK_CREATION {
 }
 
 impl TpmStructure for TPMT_TK_CREATION {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_TK_CREATION>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -8858,16 +8429,6 @@ impl TPMT_TK_VERIFIED {
 }
 
 impl TpmStructure for TPMT_TK_VERIFIED {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_TK_VERIFIED>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -8935,16 +8496,6 @@ impl TPMT_TK_AUTH {
 }
 
 impl TpmStructure for TPMT_TK_AUTH {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_TK_AUTH>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -9006,16 +8557,6 @@ impl TPMT_TK_HASHCHECK {
 }
 
 impl TpmStructure for TPMT_TK_HASHCHECK {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_TK_HASHCHECK>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -9077,16 +8618,6 @@ impl TPMS_ALG_PROPERTY {
 }
 
 impl TpmStructure for TPMS_ALG_PROPERTY {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_ALG_PROPERTY>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -9145,16 +8676,6 @@ impl TPMS_TAGGED_PROPERTY {
 }
 
 impl TpmStructure for TPMS_TAGGED_PROPERTY {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_TAGGED_PROPERTY>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -9212,16 +8733,6 @@ impl TPMS_TAGGED_PCR_SELECT {
 }
 
 impl TpmStructure for TPMS_TAGGED_PCR_SELECT {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_TAGGED_PCR_SELECT>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -9281,16 +8792,6 @@ impl TPMS_TAGGED_POLICY {
 }
 
 impl TpmStructure for TPMS_TAGGED_POLICY {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_TAGGED_POLICY>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -9354,16 +8855,6 @@ impl TPMS_ACT_DATA {
 }
 
 impl TpmStructure for TPMS_ACT_DATA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_ACT_DATA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -9424,16 +8915,6 @@ impl TPML_CC {
 }
 
 impl TpmStructure for TPML_CC {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPML_CC>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -9487,16 +8968,6 @@ impl TPML_CCA {
 }
 
 impl TpmStructure for TPML_CCA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPML_CCA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -9549,16 +9020,6 @@ impl TPML_ALG {
 }
 
 impl TpmStructure for TPML_ALG {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPML_ALG>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -9613,16 +9074,6 @@ impl TPML_HANDLE {
 }
 
 impl TpmStructure for TPML_HANDLE {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPML_HANDLE>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -9677,16 +9128,6 @@ impl TPML_DIGEST {
 }
 
 impl TpmStructure for TPML_DIGEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPML_DIGEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -9738,16 +9179,6 @@ impl TPML_DIGEST_VALUES {
 }
 
 impl TpmStructure for TPML_DIGEST_VALUES {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPML_DIGEST_VALUES>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -9802,16 +9233,6 @@ impl TPML_PCR_SELECTION {
 }
 
 impl TpmStructure for TPML_PCR_SELECTION {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPML_PCR_SELECTION>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -9866,16 +9287,6 @@ impl TPML_ALG_PROPERTY {
 }
 
 impl TpmStructure for TPML_ALG_PROPERTY {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPML_ALG_PROPERTY>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -9930,16 +9341,6 @@ impl TPML_TAGGED_TPM_PROPERTY {
 }
 
 impl TpmStructure for TPML_TAGGED_TPM_PROPERTY {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPML_TAGGED_TPM_PROPERTY>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -9994,16 +9395,6 @@ impl TPML_TAGGED_PCR_PROPERTY {
 }
 
 impl TpmStructure for TPML_TAGGED_PCR_PROPERTY {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPML_TAGGED_PCR_PROPERTY>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -10058,16 +9449,6 @@ impl TPML_ECC_CURVE {
 }
 
 impl TpmStructure for TPML_ECC_CURVE {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPML_ECC_CURVE>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -10123,16 +9504,6 @@ impl TPML_TAGGED_POLICY {
 }
 
 impl TpmStructure for TPML_TAGGED_POLICY {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPML_TAGGED_POLICY>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -10187,16 +9558,6 @@ impl TPML_ACT_DATA {
 }
 
 impl TpmStructure for TPML_ACT_DATA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPML_ACT_DATA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -10252,16 +9613,6 @@ impl TPMS_CAPABILITY_DATA {
 }
 
 impl TpmStructure for TPMS_CAPABILITY_DATA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_CAPABILITY_DATA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -10338,16 +9689,6 @@ impl TPMS_CLOCK_INFO {
 }
 
 impl TpmStructure for TPMS_CLOCK_INFO {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_CLOCK_INFO>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -10410,16 +9751,6 @@ impl TPMS_TIME_INFO {
 }
 
 impl TpmStructure for TPMS_TIME_INFO {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_TIME_INFO>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -10480,16 +9811,6 @@ impl TPMS_TIME_ATTEST_INFO {
 }
 
 impl TpmStructure for TPMS_TIME_ATTEST_INFO {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_TIME_ATTEST_INFO>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -10550,16 +9871,6 @@ impl TPMS_CERTIFY_INFO {
 }
 
 impl TpmStructure for TPMS_CERTIFY_INFO {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_CERTIFY_INFO>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -10620,16 +9931,6 @@ impl TPMS_QUOTE_INFO {
 }
 
 impl TpmStructure for TPMS_QUOTE_INFO {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_QUOTE_INFO>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -10701,16 +10002,6 @@ impl TPMS_COMMAND_AUDIT_INFO {
 }
 
 impl TpmStructure for TPMS_COMMAND_AUDIT_INFO {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_COMMAND_AUDIT_INFO>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -10777,16 +10068,6 @@ impl TPMS_SESSION_AUDIT_INFO {
 }
 
 impl TpmStructure for TPMS_SESSION_AUDIT_INFO {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SESSION_AUDIT_INFO>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -10847,16 +10128,6 @@ impl TPMS_CREATION_INFO {
 }
 
 impl TpmStructure for TPMS_CREATION_INFO {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_CREATION_INFO>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -10923,16 +10194,6 @@ impl TPMS_NV_CERTIFY_INFO {
 }
 
 impl TpmStructure for TPMS_NV_CERTIFY_INFO {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_NV_CERTIFY_INFO>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -10996,16 +10257,6 @@ impl TPMS_NV_DIGEST_CERTIFY_INFO {
 }
 
 impl TpmStructure for TPMS_NV_DIGEST_CERTIFY_INFO {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_NV_DIGEST_CERTIFY_INFO>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -11092,16 +10343,6 @@ impl TPMS_ATTEST {
 }
 
 impl TpmStructure for TPMS_ATTEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_ATTEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -11166,16 +10407,6 @@ impl TPM2B_ATTEST {
 }
 
 impl TpmStructure for TPM2B_ATTEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_ATTEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -11242,16 +10473,6 @@ impl TPMS_AUTH_COMMAND {
 }
 
 impl TpmStructure for TPMS_AUTH_COMMAND {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_AUTH_COMMAND>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -11320,16 +10541,6 @@ impl TPMS_AUTH_RESPONSE {
 }
 
 impl TpmStructure for TPMS_AUTH_RESPONSE {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_AUTH_RESPONSE>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -11376,16 +10587,6 @@ impl TPMS_TDES_SYM_DETAILS {
 }
 
 impl TpmStructure for TPMS_TDES_SYM_DETAILS {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_TDES_SYM_DETAILS>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -11426,16 +10627,6 @@ impl TPMS_AES_SYM_DETAILS {
 }
 
 impl TpmStructure for TPMS_AES_SYM_DETAILS {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_AES_SYM_DETAILS>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -11476,16 +10667,6 @@ impl TPMS_SM4_SYM_DETAILS {
 }
 
 impl TpmStructure for TPMS_SM4_SYM_DETAILS {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SM4_SYM_DETAILS>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -11526,16 +10707,6 @@ impl TPMS_CAMELLIA_SYM_DETAILS {
 }
 
 impl TpmStructure for TPMS_CAMELLIA_SYM_DETAILS {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_CAMELLIA_SYM_DETAILS>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -11576,16 +10747,6 @@ impl TPMS_ANY_SYM_DETAILS {
 }
 
 impl TpmStructure for TPMS_ANY_SYM_DETAILS {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_ANY_SYM_DETAILS>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -11626,16 +10787,6 @@ impl TPMS_XOR_SYM_DETAILS {
 }
 
 impl TpmStructure for TPMS_XOR_SYM_DETAILS {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_XOR_SYM_DETAILS>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -11676,16 +10827,6 @@ impl TPMS_NULL_SYM_DETAILS {
 }
 
 impl TpmStructure for TPMS_NULL_SYM_DETAILS {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_NULL_SYM_DETAILS>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -11747,16 +10888,6 @@ impl TPMT_SYM_DEF {
 }
 
 impl TpmStructure for TPMT_SYM_DEF {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_SYM_DEF>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -11830,16 +10961,6 @@ impl TPMT_SYM_DEF_OBJECT {
 }
 
 impl TpmStructure for TPMT_SYM_DEF_OBJECT {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_SYM_DEF_OBJECT>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -11899,16 +11020,6 @@ impl TPM2B_SYM_KEY {
 }
 
 impl TpmStructure for TPM2B_SYM_KEY {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_SYM_KEY>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -11962,16 +11073,6 @@ impl TPMS_SYMCIPHER_PARMS {
 }
 
 impl TpmStructure for TPMS_SYMCIPHER_PARMS {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SYMCIPHER_PARMS>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -12024,16 +11125,6 @@ impl TPM2B_LABEL {
 }
 
 impl TpmStructure for TPM2B_LABEL {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_LABEL>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -12091,16 +11182,6 @@ impl TPMS_DERIVE {
 }
 
 impl TpmStructure for TPMS_DERIVE {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_DERIVE>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -12153,16 +11234,6 @@ impl TPM2B_DERIVE {
 }
 
 impl TpmStructure for TPM2B_DERIVE {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_DERIVE>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -12216,16 +11287,6 @@ impl TPM2B_SENSITIVE_DATA {
 }
 
 impl TpmStructure for TPM2B_SENSITIVE_DATA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_SENSITIVE_DATA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -12282,16 +11343,6 @@ impl TPMS_SENSITIVE_CREATE {
 }
 
 impl TpmStructure for TPMS_SENSITIVE_CREATE {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SENSITIVE_CREATE>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -12346,16 +11397,6 @@ impl TPM2B_SENSITIVE_CREATE {
 }
 
 impl TpmStructure for TPM2B_SENSITIVE_CREATE {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_SENSITIVE_CREATE>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -12411,16 +11452,6 @@ impl TPMS_SCHEME_HASH {
 }
 
 impl TpmStructure for TPMS_SCHEME_HASH {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SCHEME_HASH>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -12480,16 +11511,6 @@ impl TPMS_SCHEME_ECDAA {
 }
 
 impl TpmStructure for TPMS_SCHEME_ECDAA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SCHEME_ECDAA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -12536,16 +11557,6 @@ impl TPMS_SCHEME_HMAC {
 }
 
 impl TpmStructure for TPMS_SCHEME_HMAC {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SCHEME_HMAC>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -12606,16 +11617,6 @@ impl TPMS_SCHEME_XOR {
 }
 
 impl TpmStructure for TPMS_SCHEME_XOR {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SCHEME_XOR>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -12660,16 +11661,6 @@ impl TPMS_NULL_SCHEME_KEYEDHASH {
 }
 
 impl TpmStructure for TPMS_NULL_SCHEME_KEYEDHASH {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_NULL_SCHEME_KEYEDHASH>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -12721,16 +11712,6 @@ impl TPMT_KEYEDHASH_SCHEME {
 }
 
 impl TpmStructure for TPMT_KEYEDHASH_SCHEME {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_KEYEDHASH_SCHEME>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -12779,16 +11760,6 @@ impl TPMS_SIG_SCHEME_RSASSA {
 }
 
 impl TpmStructure for TPMS_SIG_SCHEME_RSASSA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SIG_SCHEME_RSASSA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -12833,16 +11804,6 @@ impl TPMS_SIG_SCHEME_RSAPSS {
 }
 
 impl TpmStructure for TPMS_SIG_SCHEME_RSAPSS {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SIG_SCHEME_RSAPSS>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -12889,16 +11850,6 @@ impl TPMS_SIG_SCHEME_ECDSA {
 }
 
 impl TpmStructure for TPMS_SIG_SCHEME_ECDSA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SIG_SCHEME_ECDSA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -12945,16 +11896,6 @@ impl TPMS_SIG_SCHEME_SM2 {
 }
 
 impl TpmStructure for TPMS_SIG_SCHEME_SM2 {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SIG_SCHEME_SM2>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13001,16 +11942,6 @@ impl TPMS_SIG_SCHEME_ECSCHNORR {
 }
 
 impl TpmStructure for TPMS_SIG_SCHEME_ECSCHNORR {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SIG_SCHEME_ECSCHNORR>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13060,16 +11991,6 @@ impl TPMS_SIG_SCHEME_ECDAA {
 }
 
 impl TpmStructure for TPMS_SIG_SCHEME_ECDAA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SIG_SCHEME_ECDAA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13114,16 +12035,6 @@ impl TPMS_NULL_SIG_SCHEME {
 }
 
 impl TpmStructure for TPMS_NULL_SIG_SCHEME {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_NULL_SIG_SCHEME>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13177,16 +12088,6 @@ impl TPMT_SIG_SCHEME {
 }
 
 impl TpmStructure for TPMT_SIG_SCHEME {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_SIG_SCHEME>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13235,16 +12136,6 @@ impl TPMS_ENC_SCHEME_OAEP {
 }
 
 impl TpmStructure for TPMS_ENC_SCHEME_OAEP {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_ENC_SCHEME_OAEP>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13286,16 +12177,6 @@ impl TPMS_ENC_SCHEME_RSAES {
 }
 
 impl TpmStructure for TPMS_ENC_SCHEME_RSAES {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_ENC_SCHEME_RSAES>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13338,16 +12219,6 @@ impl TPMS_KEY_SCHEME_ECDH {
 }
 
 impl TpmStructure for TPMS_KEY_SCHEME_ECDH {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_KEY_SCHEME_ECDH>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13392,16 +12263,6 @@ impl TPMS_KEY_SCHEME_ECMQV {
 }
 
 impl TpmStructure for TPMS_KEY_SCHEME_ECMQV {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_KEY_SCHEME_ECMQV>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13448,16 +12309,6 @@ impl TPMS_KDF_SCHEME_MGF1 {
 }
 
 impl TpmStructure for TPMS_KDF_SCHEME_MGF1 {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_KDF_SCHEME_MGF1>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13504,16 +12355,6 @@ impl TPMS_KDF_SCHEME_KDF1_SP800_56A {
 }
 
 impl TpmStructure for TPMS_KDF_SCHEME_KDF1_SP800_56A {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_KDF_SCHEME_KDF1_SP800_56A>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13560,16 +12401,6 @@ impl TPMS_KDF_SCHEME_KDF2 {
 }
 
 impl TpmStructure for TPMS_KDF_SCHEME_KDF2 {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_KDF_SCHEME_KDF2>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13616,16 +12447,6 @@ impl TPMS_KDF_SCHEME_KDF1_SP800_108 {
 }
 
 impl TpmStructure for TPMS_KDF_SCHEME_KDF1_SP800_108 {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_KDF_SCHEME_KDF1_SP800_108>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13668,16 +12489,6 @@ impl TPMS_NULL_KDF_SCHEME {
 }
 
 impl TpmStructure for TPMS_NULL_KDF_SCHEME {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_NULL_KDF_SCHEME>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13730,16 +12541,6 @@ impl TPMT_KDF_SCHEME {
 }
 
 impl TpmStructure for TPMT_KDF_SCHEME {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_KDF_SCHEME>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13786,16 +12587,6 @@ impl TPMS_NULL_ASYM_SCHEME {
 }
 
 impl TpmStructure for TPMS_NULL_ASYM_SCHEME {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_NULL_ASYM_SCHEME>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13852,16 +12643,6 @@ impl TPMT_ASYM_SCHEME {
 }
 
 impl TpmStructure for TPMT_ASYM_SCHEME {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_ASYM_SCHEME>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13922,16 +12703,6 @@ impl TPMT_RSA_SCHEME {
 }
 
 impl TpmStructure for TPMT_RSA_SCHEME {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_RSA_SCHEME>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -13992,16 +12763,6 @@ impl TPMT_RSA_DECRYPT {
 }
 
 impl TpmStructure for TPMT_RSA_DECRYPT {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_RSA_DECRYPT>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -14059,16 +12820,6 @@ impl TPM2B_PUBLIC_KEY_RSA {
 }
 
 impl TpmStructure for TPM2B_PUBLIC_KEY_RSA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_PUBLIC_KEY_RSA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -14121,16 +12872,6 @@ impl TPM2B_PRIVATE_KEY_RSA {
 }
 
 impl TpmStructure for TPM2B_PRIVATE_KEY_RSA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_PRIVATE_KEY_RSA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -14184,16 +12925,6 @@ impl TPM2B_ECC_PARAMETER {
 }
 
 impl TpmStructure for TPM2B_ECC_PARAMETER {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_ECC_PARAMETER>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -14252,16 +12983,6 @@ impl TPMS_ECC_POINT {
 }
 
 impl TpmStructure for TPMS_ECC_POINT {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_ECC_POINT>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -14315,16 +13036,6 @@ impl TPM2B_ECC_POINT {
 }
 
 impl TpmStructure for TPM2B_ECC_POINT {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_ECC_POINT>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -14381,16 +13092,6 @@ impl TPMT_ECC_SCHEME {
 }
 
 impl TpmStructure for TPMT_ECC_SCHEME {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_ECC_SCHEME>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -14507,16 +13208,6 @@ impl TPMS_ALGORITHM_DETAIL_ECC {
 }
 
 impl TpmStructure for TPMS_ALGORITHM_DETAIL_ECC {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_ALGORITHM_DETAIL_ECC>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -14603,16 +13294,6 @@ impl TPMS_SIGNATURE_RSA {
 }
 
 impl TpmStructure for TPMS_SIGNATURE_RSA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SIGNATURE_RSA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -14663,16 +13344,6 @@ impl TPMS_SIGNATURE_RSASSA {
 }
 
 impl TpmStructure for TPMS_SIGNATURE_RSASSA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SIGNATURE_RSASSA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -14723,16 +13394,6 @@ impl TPMS_SIGNATURE_RSAPSS {
 }
 
 impl TpmStructure for TPMS_SIGNATURE_RSAPSS {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SIGNATURE_RSAPSS>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -14796,16 +13457,6 @@ impl TPMS_SIGNATURE_ECC {
 }
 
 impl TpmStructure for TPMS_SIGNATURE_ECC {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SIGNATURE_ECC>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -14857,16 +13508,6 @@ impl TPMS_SIGNATURE_ECDSA {
 }
 
 impl TpmStructure for TPMS_SIGNATURE_ECDSA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SIGNATURE_ECDSA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -14918,16 +13559,6 @@ impl TPMS_SIGNATURE_ECDAA {
 }
 
 impl TpmStructure for TPMS_SIGNATURE_ECDAA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SIGNATURE_ECDAA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -14979,16 +13610,6 @@ impl TPMS_SIGNATURE_SM2 {
 }
 
 impl TpmStructure for TPMS_SIGNATURE_SM2 {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SIGNATURE_SM2>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -15040,16 +13661,6 @@ impl TPMS_SIGNATURE_ECSCHNORR {
 }
 
 impl TpmStructure for TPMS_SIGNATURE_ECSCHNORR {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_SIGNATURE_ECSCHNORR>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -15096,16 +13707,6 @@ impl TPMS_NULL_SIGNATURE {
 }
 
 impl TpmStructure for TPMS_NULL_SIGNATURE {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_NULL_SIGNATURE>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -15163,16 +13764,6 @@ impl TPMT_SIGNATURE {
 }
 
 impl TpmStructure for TPMT_SIGNATURE {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_SIGNATURE>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -15227,16 +13818,6 @@ impl TPM2B_ENCRYPTED_SECRET {
 }
 
 impl TpmStructure for TPM2B_ENCRYPTED_SECRET {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_ENCRYPTED_SECRET>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -15296,16 +13877,6 @@ impl TPMS_KEYEDHASH_PARMS {
 }
 
 impl TpmStructure for TPMS_KEYEDHASH_PARMS {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_KEYEDHASH_PARMS>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -15381,16 +13952,6 @@ impl TPMS_ASYM_PARMS {
 }
 
 impl TpmStructure for TPMS_ASYM_PARMS {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_ASYM_PARMS>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -15484,16 +14045,6 @@ impl TPMS_RSA_PARMS {
 }
 
 impl TpmStructure for TPMS_RSA_PARMS {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_RSA_PARMS>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -15592,16 +14143,6 @@ impl TPMS_ECC_PARMS {
 }
 
 impl TpmStructure for TPMS_ECC_PARMS {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_ECC_PARMS>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -15669,16 +14210,6 @@ impl TPMT_PUBLIC_PARMS {
 }
 
 impl TpmStructure for TPMT_PUBLIC_PARMS {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_PUBLIC_PARMS>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -15766,16 +14297,6 @@ impl TPMT_PUBLIC {
 }
 
 impl TpmStructure for TPMT_PUBLIC {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_PUBLIC>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -15842,16 +14363,6 @@ impl TPM2B_PUBLIC {
 }
 
 impl TpmStructure for TPM2B_PUBLIC {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_PUBLIC>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -15902,16 +14413,6 @@ impl TPM2B_TEMPLATE {
 }
 
 impl TpmStructure for TPM2B_TEMPLATE {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_TEMPLATE>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -15969,16 +14470,6 @@ impl TPM2B_PRIVATE_VENDOR_SPECIFIC {
 }
 
 impl TpmStructure for TPM2B_PRIVATE_VENDOR_SPECIFIC {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_PRIVATE_VENDOR_SPECIFIC>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -16046,16 +14537,6 @@ impl TPMT_SENSITIVE {
 }
 
 impl TpmStructure for TPMT_SENSITIVE {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMT_SENSITIVE>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -16115,16 +14596,6 @@ impl TPM2B_SENSITIVE {
 }
 
 impl TpmStructure for TPM2B_SENSITIVE {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_SENSITIVE>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -16185,16 +14656,6 @@ impl _PRIVATE {
 }
 
 impl TpmStructure for _PRIVATE {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<_PRIVATE>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -16250,16 +14711,6 @@ impl TPM2B_PRIVATE {
 }
 
 impl TpmStructure for TPM2B_PRIVATE {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_PRIVATE>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -16319,16 +14770,6 @@ impl TPMS_ID_OBJECT {
 }
 
 impl TpmStructure for TPMS_ID_OBJECT {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_ID_OBJECT>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -16382,16 +14823,6 @@ impl TPM2B_ID_OBJECT {
 }
 
 impl TpmStructure for TPM2B_ID_OBJECT {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_ID_OBJECT>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -16452,16 +14883,6 @@ impl TPMS_NV_PIN_COUNTER_PARAMETERS {
 }
 
 impl TpmStructure for TPMS_NV_PIN_COUNTER_PARAMETERS {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_NV_PIN_COUNTER_PARAMETERS>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -16540,16 +14961,6 @@ impl TPMS_NV_PUBLIC {
 }
 
 impl TpmStructure for TPMS_NV_PUBLIC {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_NV_PUBLIC>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -16608,16 +15019,6 @@ impl TPM2B_NV_PUBLIC {
 }
 
 impl TpmStructure for TPM2B_NV_PUBLIC {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_NV_PUBLIC>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -16669,16 +15070,6 @@ impl TPM2B_CONTEXT_SENSITIVE {
 }
 
 impl TpmStructure for TPM2B_CONTEXT_SENSITIVE {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_CONTEXT_SENSITIVE>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -16734,16 +15125,6 @@ impl TPMS_CONTEXT_DATA {
 }
 
 impl TpmStructure for TPMS_CONTEXT_DATA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_CONTEXT_DATA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -16795,16 +15176,6 @@ impl TPM2B_CONTEXT_DATA {
 }
 
 impl TpmStructure for TPM2B_CONTEXT_DATA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_CONTEXT_DATA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -16876,16 +15247,6 @@ impl TPMS_CONTEXT {
 }
 
 impl TpmStructure for TPMS_CONTEXT {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_CONTEXT>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -16983,16 +15344,6 @@ impl TPMS_CREATION_DATA {
 }
 
 impl TpmStructure for TPMS_CREATION_DATA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_CREATION_DATA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -17055,16 +15406,6 @@ impl TPM2B_CREATION_DATA {
 }
 
 impl TpmStructure for TPM2B_CREATION_DATA {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_CREATION_DATA>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -17121,16 +15462,6 @@ impl TPMS_AC_OUTPUT {
 }
 
 impl TpmStructure for TPMS_AC_OUTPUT {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPMS_AC_OUTPUT>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -17183,16 +15514,6 @@ impl TPML_AC_CAPABILITIES {
 }
 
 impl TpmStructure for TPML_AC_CAPABILITIES {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPML_AC_CAPABILITIES>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -17248,16 +15569,6 @@ impl TPM2_Startup_REQUEST {
 }
 
 impl TpmStructure for TPM2_Startup_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_Startup_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -17320,16 +15631,6 @@ impl TPM2_Shutdown_REQUEST {
 }
 
 impl TpmStructure for TPM2_Shutdown_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_Shutdown_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -17394,16 +15695,6 @@ impl TPM2_SelfTest_REQUEST {
 }
 
 impl TpmStructure for TPM2_SelfTest_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_SelfTest_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -17465,16 +15756,6 @@ impl TPM2_IncrementalSelfTest_REQUEST {
 }
 
 impl TpmStructure for TPM2_IncrementalSelfTest_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_IncrementalSelfTest_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -17527,16 +15808,6 @@ impl IncrementalSelfTestResponse {
 }
 
 impl TpmStructure for IncrementalSelfTestResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<IncrementalSelfTestResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -17588,16 +15859,6 @@ impl TPM2_GetTestResult_REQUEST {
 }
 
 impl TpmStructure for TPM2_GetTestResult_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_GetTestResult_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -17650,16 +15911,6 @@ impl GetTestResultResponse {
 }
 
 impl TpmStructure for GetTestResultResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<GetTestResultResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -17767,16 +16018,6 @@ impl TPM2_StartAuthSession_REQUEST {
 }
 
 impl TpmStructure for TPM2_StartAuthSession_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_StartAuthSession_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -17843,16 +16084,6 @@ impl StartAuthSessionResponse {
 }
 
 impl TpmStructure for StartAuthSessionResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<StartAuthSessionResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -17921,16 +16152,6 @@ impl TPM2_PolicyRestart_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyRestart_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyRestart_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -18020,16 +16241,6 @@ impl TPM2_Create_REQUEST {
 }
 
 impl TpmStructure for TPM2_Create_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_Create_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -18107,16 +16318,6 @@ impl CreateResponse {
 }
 
 impl TpmStructure for CreateResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<CreateResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -18201,16 +16402,6 @@ impl TPM2_Load_REQUEST {
 }
 
 impl TpmStructure for TPM2_Load_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_Load_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -18270,16 +16461,6 @@ impl LoadResponse {
 }
 
 impl TpmStructure for LoadResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<LoadResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -18356,16 +16537,6 @@ impl TPM2_LoadExternal_REQUEST {
 }
 
 impl TpmStructure for TPM2_LoadExternal_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_LoadExternal_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -18427,16 +16598,6 @@ impl LoadExternalResponse {
 }
 
 impl TpmStructure for LoadExternalResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<LoadExternalResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -18503,16 +16664,6 @@ impl TPM2_ReadPublic_REQUEST {
 }
 
 impl TpmStructure for TPM2_ReadPublic_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ReadPublic_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -18568,16 +16719,6 @@ impl ReadPublicResponse {
 }
 
 impl TpmStructure for ReadPublicResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<ReadPublicResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -18668,16 +16809,6 @@ impl TPM2_ActivateCredential_REQUEST {
 }
 
 impl TpmStructure for TPM2_ActivateCredential_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ActivateCredential_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -18735,16 +16866,6 @@ impl ActivateCredentialResponse {
 }
 
 impl TpmStructure for ActivateCredentialResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<ActivateCredentialResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -18820,16 +16941,6 @@ impl TPM2_MakeCredential_REQUEST {
 }
 
 impl TpmStructure for TPM2_MakeCredential_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_MakeCredential_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -18888,16 +16999,6 @@ impl MakeCredentialResponse {
 }
 
 impl TpmStructure for MakeCredentialResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<MakeCredentialResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -18965,16 +17066,6 @@ impl TPM2_Unseal_REQUEST {
 }
 
 impl TpmStructure for TPM2_Unseal_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_Unseal_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -19025,16 +17116,6 @@ impl UnsealResponse {
 }
 
 impl TpmStructure for UnsealResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<UnsealResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -19112,16 +17193,6 @@ impl TPM2_ObjectChangeAuth_REQUEST {
 }
 
 impl TpmStructure for TPM2_ObjectChangeAuth_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ObjectChangeAuth_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -19174,16 +17245,6 @@ impl ObjectChangeAuthResponse {
 }
 
 impl TpmStructure for ObjectChangeAuthResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<ObjectChangeAuthResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -19263,16 +17324,6 @@ impl TPM2_CreateLoaded_REQUEST {
 }
 
 impl TpmStructure for TPM2_CreateLoaded_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_CreateLoaded_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -19341,16 +17392,6 @@ impl CreateLoadedResponse {
 }
 
 impl TpmStructure for CreateLoadedResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<CreateLoadedResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -19443,16 +17484,6 @@ impl TPM2_Duplicate_REQUEST {
 }
 
 impl TpmStructure for TPM2_Duplicate_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_Duplicate_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -19517,16 +17548,6 @@ impl DuplicateResponse {
 }
 
 impl TpmStructure for DuplicateResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<DuplicateResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -19624,16 +17645,6 @@ impl TPM2_Rewrap_REQUEST {
 }
 
 impl TpmStructure for TPM2_Rewrap_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_Rewrap_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -19697,16 +17708,6 @@ impl RewrapResponse {
 }
 
 impl TpmStructure for RewrapResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<RewrapResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -19809,16 +17810,6 @@ impl TPM2_Import_REQUEST {
 }
 
 impl TpmStructure for TPM2_Import_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_Import_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -19882,16 +17873,6 @@ impl ImportResponse {
 }
 
 impl TpmStructure for ImportResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<ImportResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -19984,16 +17965,6 @@ impl TPM2_RSA_Encrypt_REQUEST {
 }
 
 impl TpmStructure for TPM2_RSA_Encrypt_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_RSA_Encrypt_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -20056,16 +18027,6 @@ impl RSA_EncryptResponse {
 }
 
 impl TpmStructure for RSA_EncryptResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<RSA_EncryptResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -20154,16 +18115,6 @@ impl TPM2_RSA_Decrypt_REQUEST {
 }
 
 impl TpmStructure for TPM2_RSA_Decrypt_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_RSA_Decrypt_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -20224,16 +18175,6 @@ impl RSA_DecryptResponse {
 }
 
 impl TpmStructure for RSA_DecryptResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<RSA_DecryptResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -20300,16 +18241,6 @@ impl TPM2_ECDH_KeyGen_REQUEST {
 }
 
 impl TpmStructure for TPM2_ECDH_KeyGen_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ECDH_KeyGen_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -20364,16 +18295,6 @@ impl ECDH_KeyGenResponse {
 }
 
 impl TpmStructure for ECDH_KeyGenResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<ECDH_KeyGenResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -20449,16 +18370,6 @@ impl TPM2_ECDH_ZGen_REQUEST {
 }
 
 impl TpmStructure for TPM2_ECDH_ZGen_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ECDH_ZGen_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -20514,16 +18425,6 @@ impl ECDH_ZGenResponse {
 }
 
 impl TpmStructure for ECDH_ZGenResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<ECDH_ZGenResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -20586,16 +18487,6 @@ impl TPM2_ECC_Parameters_REQUEST {
 }
 
 impl TpmStructure for TPM2_ECC_Parameters_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ECC_Parameters_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -20647,16 +18538,6 @@ impl ECC_ParametersResponse {
 }
 
 impl TpmStructure for ECC_ParametersResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<ECC_ParametersResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -20746,16 +18627,6 @@ impl TPM2_ZGen_2Phase_REQUEST {
 }
 
 impl TpmStructure for TPM2_ZGen_2Phase_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ZGen_2Phase_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -20820,16 +18691,6 @@ impl ZGen_2PhaseResponse {
 }
 
 impl TpmStructure for ZGen_2PhaseResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<ZGen_2PhaseResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -20910,16 +18771,6 @@ impl TPM2_ECC_Encrypt_REQUEST {
 }
 
 impl TpmStructure for TPM2_ECC_Encrypt_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ECC_Encrypt_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -20983,16 +18834,6 @@ impl ECC_EncryptResponse {
 }
 
 impl TpmStructure for ECC_EncryptResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<ECC_EncryptResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -21086,16 +18927,6 @@ impl TPM2_ECC_Decrypt_REQUEST {
 }
 
 impl TpmStructure for TPM2_ECC_Decrypt_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ECC_Decrypt_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -21157,16 +18988,6 @@ impl ECC_DecryptResponse {
 }
 
 impl TpmStructure for ECC_DecryptResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<ECC_DecryptResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -21255,16 +19076,6 @@ impl TPM2_EncryptDecrypt_REQUEST {
 }
 
 impl TpmStructure for TPM2_EncryptDecrypt_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_EncryptDecrypt_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -21326,16 +19137,6 @@ impl EncryptDecryptResponse {
 }
 
 impl TpmStructure for EncryptDecryptResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<EncryptDecryptResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -21426,16 +19227,6 @@ impl TPM2_EncryptDecrypt2_REQUEST {
 }
 
 impl TpmStructure for TPM2_EncryptDecrypt2_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_EncryptDecrypt2_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -21498,16 +19289,6 @@ impl EncryptDecrypt2Response {
 }
 
 impl TpmStructure for EncryptDecrypt2Response {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<EncryptDecrypt2Response>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -21584,16 +19365,6 @@ impl TPM2_Hash_REQUEST {
 }
 
 impl TpmStructure for TPM2_Hash_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_Hash_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -21655,16 +19426,6 @@ impl HashResponse {
 }
 
 impl TpmStructure for HashResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<HashResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -21743,16 +19504,6 @@ impl TPM2_HMAC_REQUEST {
 }
 
 impl TpmStructure for TPM2_HMAC_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_HMAC_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -21807,16 +19558,6 @@ impl HMACResponse {
 }
 
 impl TpmStructure for HMACResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<HMACResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -21894,16 +19635,6 @@ impl TPM2_MAC_REQUEST {
 }
 
 impl TpmStructure for TPM2_MAC_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_MAC_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -21959,16 +19690,6 @@ impl MACResponse {
 }
 
 impl TpmStructure for MACResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<MACResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -22031,16 +19752,6 @@ impl TPM2_GetRandom_REQUEST {
 }
 
 impl TpmStructure for TPM2_GetRandom_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_GetRandom_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -22092,16 +19803,6 @@ impl GetRandomResponse {
 }
 
 impl TpmStructure for GetRandomResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<GetRandomResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -22164,16 +19865,6 @@ impl TPM2_StirRandom_REQUEST {
 }
 
 impl TpmStructure for TPM2_StirRandom_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_StirRandom_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -22252,16 +19943,6 @@ impl TPM2_HMAC_Start_REQUEST {
 }
 
 impl TpmStructure for TPM2_HMAC_Start_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_HMAC_Start_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -22319,16 +20000,6 @@ impl HMAC_StartResponse {
 }
 
 impl TpmStructure for HMAC_StartResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<HMAC_StartResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -22404,16 +20075,6 @@ impl TPM2_MAC_Start_REQUEST {
 }
 
 impl TpmStructure for TPM2_MAC_Start_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_MAC_Start_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -22471,16 +20132,6 @@ impl MAC_StartResponse {
 }
 
 impl TpmStructure for MAC_StartResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<MAC_StartResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -22550,16 +20201,6 @@ impl TPM2_HashSequenceStart_REQUEST {
 }
 
 impl TpmStructure for TPM2_HashSequenceStart_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_HashSequenceStart_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -22618,16 +20259,6 @@ impl HashSequenceStartResponse {
 }
 
 impl TpmStructure for HashSequenceStartResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<HashSequenceStartResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -22696,16 +20327,6 @@ impl TPM2_SequenceUpdate_REQUEST {
 }
 
 impl TpmStructure for TPM2_SequenceUpdate_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_SequenceUpdate_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -22783,16 +20404,6 @@ impl TPM2_SequenceComplete_REQUEST {
 }
 
 impl TpmStructure for TPM2_SequenceComplete_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_SequenceComplete_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -22853,16 +20464,6 @@ impl SequenceCompleteResponse {
 }
 
 impl TpmStructure for SequenceCompleteResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<SequenceCompleteResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -22947,16 +20548,6 @@ impl TPM2_EventSequenceComplete_REQUEST {
 }
 
 impl TpmStructure for TPM2_EventSequenceComplete_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_EventSequenceComplete_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -23013,16 +20604,6 @@ impl EventSequenceCompleteResponse {
 }
 
 impl TpmStructure for EventSequenceCompleteResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<EventSequenceCompleteResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -23115,16 +20696,6 @@ impl TPM2_Certify_REQUEST {
 }
 
 impl TpmStructure for TPM2_Certify_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_Certify_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -23194,16 +20765,6 @@ impl CertifyResponse {
 }
 
 impl TpmStructure for CertifyResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<CertifyResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -23309,16 +20870,6 @@ impl TPM2_CertifyCreation_REQUEST {
 }
 
 impl TpmStructure for TPM2_CertifyCreation_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_CertifyCreation_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -23391,16 +20942,6 @@ impl CertifyCreationResponse {
 }
 
 impl TpmStructure for CertifyCreationResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<CertifyCreationResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -23491,16 +21032,6 @@ impl TPM2_Quote_REQUEST {
 }
 
 impl TpmStructure for TPM2_Quote_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_Quote_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -23568,16 +21099,6 @@ impl QuoteResponse {
 }
 
 impl TpmStructure for QuoteResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<QuoteResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -23678,16 +21199,6 @@ impl TPM2_GetSessionAuditDigest_REQUEST {
 }
 
 impl TpmStructure for TPM2_GetSessionAuditDigest_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_GetSessionAuditDigest_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -23753,16 +21264,6 @@ impl GetSessionAuditDigestResponse {
 }
 
 impl TpmStructure for GetSessionAuditDigestResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<GetSessionAuditDigestResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -23858,16 +21359,6 @@ impl TPM2_GetCommandAuditDigest_REQUEST {
 }
 
 impl TpmStructure for TPM2_GetCommandAuditDigest_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_GetCommandAuditDigest_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -23935,16 +21426,6 @@ impl GetCommandAuditDigestResponse {
 }
 
 impl TpmStructure for GetCommandAuditDigestResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<GetCommandAuditDigestResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -24038,16 +21519,6 @@ impl TPM2_GetTime_REQUEST {
 }
 
 impl TpmStructure for TPM2_GetTime_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_GetTime_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -24113,16 +21584,6 @@ impl GetTimeResponse {
 }
 
 impl TpmStructure for GetTimeResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<GetTimeResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -24226,16 +21687,6 @@ impl TPM2_CertifyX509_REQUEST {
 }
 
 impl TpmStructure for TPM2_CertifyX509_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_CertifyX509_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -24312,16 +21763,6 @@ impl CertifyX509Response {
 }
 
 impl TpmStructure for CertifyX509Response {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<CertifyX509Response>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -24412,16 +21853,6 @@ impl TPM2_Commit_REQUEST {
 }
 
 impl TpmStructure for TPM2_Commit_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_Commit_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -24490,16 +21921,6 @@ impl CommitResponse {
 }
 
 impl TpmStructure for CommitResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<CommitResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -24568,16 +21989,6 @@ impl TPM2_EC_Ephemeral_REQUEST {
 }
 
 impl TpmStructure for TPM2_EC_Ephemeral_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_EC_Ephemeral_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -24632,16 +22043,6 @@ impl EC_EphemeralResponse {
 }
 
 impl TpmStructure for EC_EphemeralResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<EC_EphemeralResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -24724,16 +22125,6 @@ impl TPM2_VerifySignature_REQUEST {
 }
 
 impl TpmStructure for TPM2_VerifySignature_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_VerifySignature_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -24791,16 +22182,6 @@ impl VerifySignatureResponse {
 }
 
 impl TpmStructure for VerifySignatureResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<VerifySignatureResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -24888,16 +22269,6 @@ impl TPM2_Sign_REQUEST {
 }
 
 impl TpmStructure for TPM2_Sign_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_Sign_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -24963,16 +22334,6 @@ impl SignResponse {
 }
 
 impl TpmStructure for SignResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<SignResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -25059,16 +22420,6 @@ impl TPM2_SetCommandCodeAuditStatus_REQUEST {
 }
 
 impl TpmStructure for TPM2_SetCommandCodeAuditStatus_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_SetCommandCodeAuditStatus_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -25145,16 +22496,6 @@ impl TPM2_PCR_Extend_REQUEST {
 }
 
 impl TpmStructure for TPM2_PCR_Extend_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PCR_Extend_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -25225,16 +22566,6 @@ impl TPM2_PCR_Event_REQUEST {
 }
 
 impl TpmStructure for TPM2_PCR_Event_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PCR_Event_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -25286,16 +22617,6 @@ impl PCR_EventResponse {
 }
 
 impl TpmStructure for PCR_EventResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<PCR_EventResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -25358,16 +22679,6 @@ impl TPM2_PCR_Read_REQUEST {
 }
 
 impl TpmStructure for TPM2_PCR_Read_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PCR_Read_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -25426,16 +22737,6 @@ impl PCR_ReadResponse {
 }
 
 impl TpmStructure for PCR_ReadResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<PCR_ReadResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -25510,16 +22811,6 @@ impl TPM2_PCR_Allocate_REQUEST {
 }
 
 impl TpmStructure for TPM2_PCR_Allocate_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PCR_Allocate_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -25582,16 +22873,6 @@ impl PCR_AllocateResponse {
 }
 
 impl TpmStructure for PCR_AllocateResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<PCR_AllocateResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -25680,16 +22961,6 @@ impl TPM2_PCR_SetAuthPolicy_REQUEST {
 }
 
 impl TpmStructure for TPM2_PCR_SetAuthPolicy_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PCR_SetAuthPolicy_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -25764,16 +23035,6 @@ impl TPM2_PCR_SetAuthValue_REQUEST {
 }
 
 impl TpmStructure for TPM2_PCR_SetAuthValue_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PCR_SetAuthValue_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -25841,16 +23102,6 @@ impl TPM2_PCR_Reset_REQUEST {
 }
 
 impl TpmStructure for TPM2_PCR_Reset_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PCR_Reset_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -25956,16 +23207,6 @@ impl TPM2_PolicySigned_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicySigned_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicySigned_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -26035,16 +23276,6 @@ impl PolicySignedResponse {
 }
 
 impl TpmStructure for PolicySignedResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<PolicySignedResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -26148,16 +23379,6 @@ impl TPM2_PolicySecret_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicySecret_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicySecret_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -26223,16 +23444,6 @@ impl PolicySecretResponse {
 }
 
 impl TpmStructure for PolicySecretResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<PolicySecretResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -26329,16 +23540,6 @@ impl TPM2_PolicyTicket_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyTicket_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyTicket_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -26419,16 +23620,6 @@ impl TPM2_PolicyOR_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyOR_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyOR_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -26507,16 +23698,6 @@ impl TPM2_PolicyPCR_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyPCR_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyPCR_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -26588,16 +23769,6 @@ impl TPM2_PolicyLocality_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyLocality_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyLocality_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -26693,16 +23864,6 @@ impl TPM2_PolicyNV_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyNV_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyNV_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -26787,16 +23948,6 @@ impl TPM2_PolicyCounterTimer_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyCounterTimer_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyCounterTimer_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -26870,16 +24021,6 @@ impl TPM2_PolicyCommandCode_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyCommandCode_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyCommandCode_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -26944,16 +24085,6 @@ impl TPM2_PolicyPhysicalPresence_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyPhysicalPresence_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyPhysicalPresence_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -27020,16 +24151,6 @@ impl TPM2_PolicyCpHash_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyCpHash_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyCpHash_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -27101,16 +24222,6 @@ impl TPM2_PolicyNameHash_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyNameHash_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyNameHash_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -27191,16 +24302,6 @@ impl TPM2_PolicyDuplicationSelect_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyDuplicationSelect_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyDuplicationSelect_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -27291,16 +24392,6 @@ impl TPM2_PolicyAuthorize_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyAuthorize_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyAuthorize_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -27371,16 +24462,6 @@ impl TPM2_PolicyAuthValue_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyAuthValue_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyAuthValue_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -27442,16 +24523,6 @@ impl TPM2_PolicyPassword_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyPassword_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyPassword_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -27514,16 +24585,6 @@ impl TPM2_PolicyGetDigest_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyGetDigest_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyGetDigest_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -27574,16 +24635,6 @@ impl PolicyGetDigestResponse {
 }
 
 impl TpmStructure for PolicyGetDigestResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<PolicyGetDigestResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -27656,16 +24707,6 @@ impl TPM2_PolicyNvWritten_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyNvWritten_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyNvWritten_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -27736,16 +24777,6 @@ impl TPM2_PolicyTemplate_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyTemplate_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyTemplate_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -27828,16 +24859,6 @@ impl TPM2_PolicyAuthorizeNV_REQUEST {
 }
 
 impl TpmStructure for TPM2_PolicyAuthorizeNV_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PolicyAuthorizeNV_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -27925,16 +24946,6 @@ impl TPM2_CreatePrimary_REQUEST {
 }
 
 impl TpmStructure for TPM2_CreatePrimary_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_CreatePrimary_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -28014,16 +25025,6 @@ impl CreatePrimaryResponse {
 }
 
 impl TpmStructure for CreatePrimaryResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<CreatePrimaryResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -28113,16 +25114,6 @@ impl TPM2_HierarchyControl_REQUEST {
 }
 
 impl TpmStructure for TPM2_HierarchyControl_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_HierarchyControl_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -28206,16 +25197,6 @@ impl TPM2_SetPrimaryPolicy_REQUEST {
 }
 
 impl TpmStructure for TPM2_SetPrimaryPolicy_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_SetPrimaryPolicy_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -28284,16 +25265,6 @@ impl TPM2_ChangePPS_REQUEST {
 }
 
 impl TpmStructure for TPM2_ChangePPS_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ChangePPS_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -28361,16 +25332,6 @@ impl TPM2_ChangeEPS_REQUEST {
 }
 
 impl TpmStructure for TPM2_ChangeEPS_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ChangeEPS_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -28433,16 +25394,6 @@ impl TPM2_Clear_REQUEST {
 }
 
 impl TpmStructure for TPM2_Clear_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_Clear_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -28510,16 +25461,6 @@ impl TPM2_ClearControl_REQUEST {
 }
 
 impl TpmStructure for TPM2_ClearControl_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ClearControl_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -28590,16 +25531,6 @@ impl TPM2_HierarchyChangeAuth_REQUEST {
 }
 
 impl TpmStructure for TPM2_HierarchyChangeAuth_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_HierarchyChangeAuth_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -28667,16 +25598,6 @@ impl TPM2_DictionaryAttackLockReset_REQUEST {
 }
 
 impl TpmStructure for TPM2_DictionaryAttackLockReset_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_DictionaryAttackLockReset_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -28756,16 +25677,6 @@ impl TPM2_DictionaryAttackParameters_REQUEST {
 }
 
 impl TpmStructure for TPM2_DictionaryAttackParameters_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_DictionaryAttackParameters_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -28845,16 +25756,6 @@ impl TPM2_PP_Commands_REQUEST {
 }
 
 impl TpmStructure for TPM2_PP_Commands_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_PP_Commands_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -28928,16 +25829,6 @@ impl TPM2_SetAlgorithmSet_REQUEST {
 }
 
 impl TpmStructure for TPM2_SetAlgorithmSet_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_SetAlgorithmSet_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -29026,16 +25917,6 @@ impl TPM2_FieldUpgradeStart_REQUEST {
 }
 
 impl TpmStructure for TPM2_FieldUpgradeStart_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_FieldUpgradeStart_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -29106,16 +25987,6 @@ impl TPM2_FieldUpgradeData_REQUEST {
 }
 
 impl TpmStructure for TPM2_FieldUpgradeData_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_FieldUpgradeData_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -29175,16 +26046,6 @@ impl FieldUpgradeDataResponse {
 }
 
 impl TpmStructure for FieldUpgradeDataResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<FieldUpgradeDataResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -29249,16 +26110,6 @@ impl TPM2_FirmwareRead_REQUEST {
 }
 
 impl TpmStructure for TPM2_FirmwareRead_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_FirmwareRead_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -29310,16 +26161,6 @@ impl FirmwareReadResponse {
 }
 
 impl TpmStructure for FirmwareReadResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<FirmwareReadResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -29385,16 +26226,6 @@ impl TPM2_ContextSave_REQUEST {
 }
 
 impl TpmStructure for TPM2_ContextSave_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ContextSave_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -29444,16 +26275,6 @@ impl ContextSaveResponse {
 }
 
 impl TpmStructure for ContextSaveResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<ContextSaveResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -29515,16 +26336,6 @@ impl TPM2_ContextLoad_REQUEST {
 }
 
 impl TpmStructure for TPM2_ContextLoad_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ContextLoad_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -29577,16 +26388,6 @@ impl ContextLoadResponse {
 }
 
 impl TpmStructure for ContextLoadResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<ContextLoadResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -29649,16 +26450,6 @@ impl TPM2_FlushContext_REQUEST {
 }
 
 impl TpmStructure for TPM2_FlushContext_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_FlushContext_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -29740,16 +26531,6 @@ impl TPM2_EvictControl_REQUEST {
 }
 
 impl TpmStructure for TPM2_EvictControl_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_EvictControl_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -29800,16 +26581,6 @@ impl TPM2_ReadClock_REQUEST {
 }
 
 impl TpmStructure for TPM2_ReadClock_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ReadClock_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -29859,16 +26630,6 @@ impl ReadClockResponse {
 }
 
 impl TpmStructure for ReadClockResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<ReadClockResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -29941,16 +26702,6 @@ impl TPM2_ClockSet_REQUEST {
 }
 
 impl TpmStructure for TPM2_ClockSet_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ClockSet_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -30021,16 +26772,6 @@ impl TPM2_ClockRateAdjust_REQUEST {
 }
 
 impl TpmStructure for TPM2_ClockRateAdjust_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ClockRateAdjust_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -30102,16 +26843,6 @@ impl TPM2_GetCapability_REQUEST {
 }
 
 impl TpmStructure for TPM2_GetCapability_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_GetCapability_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -30175,16 +26906,6 @@ impl GetCapabilityResponse {
 }
 
 impl TpmStructure for GetCapabilityResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<GetCapabilityResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -30256,16 +26977,6 @@ impl TPM2_TestParms_REQUEST {
 }
 
 impl TpmStructure for TPM2_TestParms_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_TestParms_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -30346,16 +27057,6 @@ impl TPM2_NV_DefineSpace_REQUEST {
 }
 
 impl TpmStructure for TPM2_NV_DefineSpace_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_NV_DefineSpace_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -30430,16 +27131,6 @@ impl TPM2_NV_UndefineSpace_REQUEST {
 }
 
 impl TpmStructure for TPM2_NV_UndefineSpace_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_NV_UndefineSpace_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -30511,16 +27202,6 @@ impl TPM2_NV_UndefineSpaceSpecial_REQUEST {
 }
 
 impl TpmStructure for TPM2_NV_UndefineSpaceSpecial_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_NV_UndefineSpaceSpecial_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -30583,16 +27264,6 @@ impl TPM2_NV_ReadPublic_REQUEST {
 }
 
 impl TpmStructure for TPM2_NV_ReadPublic_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_NV_ReadPublic_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -30646,16 +27317,6 @@ impl NV_ReadPublicResponse {
 }
 
 impl TpmStructure for NV_ReadPublicResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<NV_ReadPublicResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -30741,16 +27402,6 @@ impl TPM2_NV_Write_REQUEST {
 }
 
 impl TpmStructure for TPM2_NV_Write_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_NV_Write_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -30826,16 +27477,6 @@ impl TPM2_NV_Increment_REQUEST {
 }
 
 impl TpmStructure for TPM2_NV_Increment_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_NV_Increment_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -30911,16 +27552,6 @@ impl TPM2_NV_Extend_REQUEST {
 }
 
 impl TpmStructure for TPM2_NV_Extend_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_NV_Extend_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -31000,16 +27631,6 @@ impl TPM2_NV_SetBits_REQUEST {
 }
 
 impl TpmStructure for TPM2_NV_SetBits_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_NV_SetBits_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -31082,16 +27703,6 @@ impl TPM2_NV_WriteLock_REQUEST {
 }
 
 impl TpmStructure for TPM2_NV_WriteLock_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_NV_WriteLock_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -31155,16 +27766,6 @@ impl TPM2_NV_GlobalWriteLock_REQUEST {
 }
 
 impl TpmStructure for TPM2_NV_GlobalWriteLock_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_NV_GlobalWriteLock_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -31245,16 +27846,6 @@ impl TPM2_NV_Read_REQUEST {
 }
 
 impl TpmStructure for TPM2_NV_Read_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_NV_Read_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -31308,16 +27899,6 @@ impl NV_ReadResponse {
 }
 
 impl TpmStructure for NV_ReadResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<NV_ReadResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -31391,16 +27972,6 @@ impl TPM2_NV_ReadLock_REQUEST {
 }
 
 impl TpmStructure for TPM2_NV_ReadLock_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_NV_ReadLock_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -31468,16 +28039,6 @@ impl TPM2_NV_ChangeAuth_REQUEST {
 }
 
 impl TpmStructure for TPM2_NV_ChangeAuth_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_NV_ChangeAuth_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -31585,16 +28146,6 @@ impl TPM2_NV_Certify_REQUEST {
 }
 
 impl TpmStructure for TPM2_NV_Certify_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_NV_Certify_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -31665,16 +28216,6 @@ impl NV_CertifyResponse {
 }
 
 impl TpmStructure for NV_CertifyResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<NV_CertifyResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -31755,16 +28296,6 @@ impl TPM2_AC_GetCapability_REQUEST {
 }
 
 impl TpmStructure for TPM2_AC_GetCapability_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_AC_GetCapability_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -31822,16 +28353,6 @@ impl AC_GetCapabilityResponse {
 }
 
 impl TpmStructure for AC_GetCapabilityResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<AC_GetCapabilityResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -31919,16 +28440,6 @@ impl TPM2_AC_Send_REQUEST {
 }
 
 impl TpmStructure for TPM2_AC_Send_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_AC_Send_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -31982,16 +28493,6 @@ impl AC_SendResponse {
 }
 
 impl TpmStructure for AC_SendResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<AC_SendResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -32078,16 +28579,6 @@ impl TPM2_Policy_AC_SendSelect_REQUEST {
 }
 
 impl TpmStructure for TPM2_Policy_AC_SendSelect_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_Policy_AC_SendSelect_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -32165,16 +28656,6 @@ impl TPM2_ACT_SetTimeout_REQUEST {
 }
 
 impl TpmStructure for TPM2_ACT_SetTimeout_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_ACT_SetTimeout_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -32236,16 +28717,6 @@ impl TPM2_Vendor_TCG_Test_REQUEST {
 }
 
 impl TpmStructure for TPM2_Vendor_TCG_Test_REQUEST {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2_Vendor_TCG_Test_REQUEST>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -32298,16 +28769,6 @@ impl Vendor_TCG_TestResponse {
 }
 
 impl TpmStructure for Vendor_TCG_TestResponse {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<Vendor_TCG_TestResponse>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -32434,16 +28895,6 @@ impl TssObject {
 }
 
 impl TpmStructure for TssObject {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TssObject>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -32503,16 +28954,6 @@ impl PcrValue {
 }
 
 impl TpmStructure for PcrValue {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<PcrValue>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -32581,16 +29022,6 @@ impl SessionIn {
 }
 
 impl TpmStructure for SessionIn {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<SessionIn>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -32657,16 +29088,6 @@ impl SessionOut {
 }
 
 impl TpmStructure for SessionOut {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<SessionOut>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -32731,16 +29152,6 @@ impl CommandHeader {
 }
 
 impl TpmStructure for CommandHeader {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<CommandHeader>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -32800,16 +29211,6 @@ impl TSS_KEY {
 }
 
 impl TpmStructure for TSS_KEY {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TSS_KEY>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -32855,16 +29256,6 @@ impl TPM2B_DIGEST_SYMCIPHER {
 }
 
 impl TpmStructure for TPM2B_DIGEST_SYMCIPHER {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_DIGEST_SYMCIPHER>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
@@ -32908,16 +29299,6 @@ impl TPM2B_DIGEST_KEYEDHASH {
 }
 
 impl TpmStructure for TPM2B_DIGEST_KEYEDHASH {
-    fn fromTpm(&self, buffer: &mut TpmBuffer) -> Result<(), TpmError> {
-        buffer.createObj::<TPM2B_DIGEST_KEYEDHASH>()?;
-        Ok(())
-    }
-
-    fn fromBytes(&mut self, buffer: &mut Vec<u8>) -> Result<(), TpmError> {
-        let mut tpm_buffer = TpmBuffer::from(buffer);
-        self.initFromTpm(&mut tpm_buffer)
-    }
-
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields

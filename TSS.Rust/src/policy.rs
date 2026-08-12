@@ -75,6 +75,12 @@ pub struct PolicyTree {
     assertions: Vec<Box<dyn PolicyAssertion>>,
 }
 
+impl Default for PolicyTree {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PolicyTree {
     /// Create an empty policy tree.
     pub fn new() -> Self {
@@ -82,6 +88,8 @@ impl PolicyTree {
     }
 
     /// Add a policy assertion to the tree. Assertions execute in order (first added = first executed).
+    // This is a consuming builder method, not arithmetic - `std::ops::Add` is the wrong shape for it.
+    #[allow(clippy::should_implement_trait)]
     pub fn add(mut self, assertion: impl PolicyAssertion + 'static) -> Self {
         self.assertions.push(Box::new(assertion));
         self
@@ -161,7 +169,7 @@ impl PolicyAssertion for PolicyLocality {
         let mut buf = Vec::new();
         buf.extend_from_slice(acc);
         buf.extend_from_slice(&TPM_CC::PolicyLocality.get_value().to_be_bytes());
-        buf.push(self.locality.get_value() as u8);
+        buf.push(self.locality.get_value());
         *acc = Crypto::hash(hash_alg, &buf)?;
         Ok(())
     }
@@ -215,6 +223,12 @@ impl PolicyAssertion for PolicyPcr {
 /// PolicyPassword - requires the object's authorization value be provided as a password.
 pub struct PolicyPassword;
 
+impl Default for PolicyPassword {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PolicyPassword {
     pub fn new() -> Self { Self }
 }
@@ -235,6 +249,12 @@ impl PolicyAssertion for PolicyPassword {
 
 /// PolicyAuthValue - requires auth-value HMAC during policy use.
 pub struct PolicyAuthValue;
+
+impl Default for PolicyAuthValue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl PolicyAuthValue {
     pub fn new() -> Self { Self }
@@ -321,7 +341,7 @@ impl PolicyAssertion for PolicyCounterTimer {
         let mut inner = Vec::new();
         inner.extend_from_slice(&self.operand_b);
         inner.extend_from_slice(&self.offset.to_be_bytes());
-        inner.extend_from_slice(&(self.operation.get_value() as u16).to_be_bytes());
+        inner.extend_from_slice(&self.operation.get_value().to_be_bytes());
         let arg_hash = Crypto::hash(hash_alg, &inner)?;
         policy_update(hash_alg, acc, TPM_CC::PolicyCounterTimer, &arg_hash, &[])
     }
@@ -497,7 +517,7 @@ impl PolicyAssertion for PolicyNv {
         let mut inner = Vec::new();
         inner.extend_from_slice(&self.operand_b);
         inner.extend_from_slice(&self.offset.to_be_bytes());
-        inner.extend_from_slice(&(self.operation.get_value() as u16).to_be_bytes());
+        inner.extend_from_slice(&self.operation.get_value().to_be_bytes());
         let args_hash = Crypto::hash(hash_alg, &inner)?;
         policy_update(hash_alg, acc, TPM_CC::PolicyNV, &args_hash, &self.nv_index_name)
     }

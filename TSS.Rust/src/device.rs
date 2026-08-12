@@ -435,6 +435,13 @@ pub struct TpmTbsDevice {
 }
 
 #[cfg(target_os = "windows")]
+impl Default for TpmTbsDevice {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_os = "windows")]
 impl TpmTbsDevice {
     pub fn new() -> Self {
         TpmTbsDevice {
@@ -453,8 +460,10 @@ impl TpmDevice for TpmTbsDevice {
             return Ok(true); // Already connected
         }
 
-        let mut params = TBS_CONTEXT_PARAMS2::default();
-        params.version = TBS_CONTEXT_VERSION_TWO;
+        let mut params = TBS_CONTEXT_PARAMS2 {
+            version: TBS_CONTEXT_VERSION_TWO,
+            ..Default::default()
+        };
         params.Anonymous.Anonymous._bitfield = 4;
         params.Anonymous.asUINT32 = 4;
 

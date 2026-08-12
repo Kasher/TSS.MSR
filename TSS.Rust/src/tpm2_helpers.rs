@@ -50,6 +50,6 @@ pub fn enum_to_str(enum_val: u64, enum_id: std::any::TypeId) -> String {
 
 pub fn int_to_tpm<T: Into<u64>>(val: T) -> Vec<u8> {
     let mut buffer = TpmBuffer::new(None);
-    buffer.write_num(val.into(), std::mem::size_of::<T>().into());
+    buffer.write_num(val.into(), std::mem::size_of::<T>());
     buffer.trim().to_vec()
 }

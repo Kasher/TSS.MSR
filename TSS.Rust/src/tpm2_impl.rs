@@ -168,10 +168,9 @@ impl Tpm2 {
         let raw_response_u32 = raw_response.get_value();
         let is_fmt = (raw_response_u32 & TPM_RC::RC_FMT1.get_value()) != 0;
 
-
         let mask: u32 = if is_fmt { 0xBF } else { 0x97F };
 
-        TPM_RC { 0: (raw_response_u32 & mask) }
+        TPM_RC(raw_response_u32 & mask)
     }
 
     /// Send a TPM command to the underlying TPM device.
@@ -239,7 +238,7 @@ impl Tpm2 {
         let mut cmd_buf = TpmBuffer::new(None);
 
         // Create command buffer header
-        cmd_buf.writeShort(self.current_session_tag.unwrap().get_value() as u16);
+        cmd_buf.writeShort(self.current_session_tag.unwrap().get_value());
         cmd_buf.writeInt(0); // to be filled in later
         cmd_buf.writeInt(cmd_code.get_value());
 
@@ -293,7 +292,7 @@ impl Tpm2 {
                     &mut cmd_buf,
                     cmd_code,
                     num_auth_handles,
-                    &param_buf.buffer(),
+                    param_buf.buffer(),
                 )?;
             } else {
                 // Create all password sessions with auth from the corresponding handles
@@ -324,7 +323,7 @@ impl Tpm2 {
         }
 
         // Write marshaled command params to the command buffer
-        cmd_buf.writeByteBuf(&param_buf.buffer());
+        cmd_buf.writeByteBuf(param_buf.buffer());
 
         // Fill in command buffer size in the command header
         cmd_buf.write_num_at_pos(cmd_buf.current_pos() as u64, 2, 4);
@@ -333,7 +332,7 @@ impl Tpm2 {
         // Handle CpHash and Audit processing
         if self.cp_hash.is_some() || self.audit_command {
             if cp_hash_data.is_empty() {
-                cp_hash_data = self.get_cp_hash_data(cmd_code, &param_buf.buffer())?;
+                cp_hash_data = self.get_cp_hash_data(cmd_code, param_buf.buffer())?;
             }
 
             if let Some(ref mut cp_hash) = self.cp_hash {
@@ -547,6 +546,7 @@ impl Tpm2 {
         // Reset position to start of parameters area and unmarshall
         resp_buf.set_current_pos(resp_params_pos);
         resp_struct.initFromTpm(&mut resp_buf)?;
+        resp_buf.check_status()?;
 
         // Validate that we read the exact number of bytes expected
         if resp_buf.current_pos() != resp_params_pos + resp_params_size {
@@ -671,6 +671,8 @@ impl Tpm2 {
     }
 
     /// Start an auth session with full control (salt key, bind object, etc.).
+    // The parameter list mirrors the TPM2_StartAuthSession command parameters.
+    #[allow(clippy::too_many_arguments)]
     pub fn start_auth_session_ex(
         &mut self,
         tpm_key: &TPM_HANDLE,
@@ -784,7 +786,7 @@ impl Tpm2 {
             buf.writeByteBuf(&name);
         }
 
-        buf.writeByteBuf(&cmd_params.to_vec());
+        buf.writeByteBuf(cmd_params);
         Ok(buf.buffer().clone())
     }
 
@@ -835,11 +837,9 @@ impl Tpm2 {
                 // For non-PWAP sessions, we need more complex processing
                 let mut h_copy = None;
 
-                if i < num_auth_handles as usize {
-                    if i < self.in_handles.len() {
-                        // Set appropriate auth value on handle
-                        h_copy = Some(self.in_handles[i].clone());
-                    }
+                if i < num_auth_handles as usize && i < self.in_handles.len() {
+                    // Set appropriate auth value on handle
+                    h_copy = Some(self.in_handles[i].clone());
                 }
 
                 auth_cmd.nonce = session.sess_in.nonce.clone();
@@ -964,6 +964,7 @@ impl Tpm2 {
 
         // Read the size of the first parameter (TPM2B prefix)
         let arr_size = param_buf.read_num(sei.size_len as usize) as usize;
+        param_buf.check_status()?;
         let arr_pos = param_buf.current_pos();
 
         if arr_size == 0 {
@@ -972,7 +973,11 @@ impl Tpm2 {
         }
 
         // Read the data to encrypt/decrypt
-        let to_xcrypt = param_buf.readByteBuf(arr_size * sei.val_len as usize);
+        let xcrypt_size = arr_size
+            .checked_mul(sei.val_len as usize)
+            .ok_or(TpmError::BufferUnderflow)?;
+        let to_xcrypt = param_buf.readByteBuf(xcrypt_size);
+        param_buf.check_status()?;
 
         // Perform encryption/decryption
         let result = sess.param_xcrypt(&to_xcrypt, is_request)?;
@@ -1023,6 +1028,7 @@ impl Tpm2 {
     ) -> Result<bool, TpmError> {
         let mut rp_ready = false;
         resp_buf.set_current_pos(resp_params_pos + resp_params_size);
+        resp_buf.check_status()?;
 
         // Pre-compute values needed for HMAC verification to avoid borrow conflicts
         let nonce_tpm_dec = self.nonce_tpm_dec.clone();
@@ -1033,6 +1039,7 @@ impl Tpm2 {
             for (j, session) in sessions.iter_mut().enumerate() {
                 let mut auth_response = TPMS_AUTH_RESPONSE::default();
                 auth_response.initFromTpm(resp_buf)?;
+                resp_buf.check_status()?;
 
                 if session.is_pwap() {
                     // PWAP sessions should have empty nonce and hmac
