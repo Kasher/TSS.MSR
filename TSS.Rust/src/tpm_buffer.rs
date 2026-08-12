@@ -16,6 +16,14 @@ pub trait TpmMarshaller {
 
     /** Populate this object from the TPM representation in the given marshaling buffer */
     fn initFromTpm(&mut self, buf: &mut TpmBuffer) -> Result<(), TpmError>;
+
+    /** Convert this object to its complete TPM wire representation. */
+    #[allow(non_snake_case)]
+    fn toBytes(&self) -> Result<Vec<u8>, TpmError> {
+        let mut buffer = TpmBuffer::new(None);
+        self.toTpm(&mut buffer)?;
+        Ok(buffer.trim().to_vec())
+    }
 }
 
 pub struct TpmBuffer {
@@ -221,7 +229,7 @@ impl TpmBuffer {
 
     /** Writes the given 8-bit integer to this buffer */
     pub fn writeByte(&mut self, val: u8) {
-        if self.check_len(1) {
+        if self.ensure_write_len(1) {
             self.buf[self.pos] = val;
             self.pos += 1;
         }
@@ -270,7 +278,7 @@ impl TpmBuffer {
     /** Marshalls the given byte buffer with no length prefix. */
     pub fn writeByteBuf(&mut self, data: &[u8]) {
         let data_size = data.len();
-        if data_size == 0 || !self.check_len(data_size) {
+        if data_size == 0 || !self.ensure_write_len(data_size) {
             return;
         }
         self.buf[self.pos..self.pos + data_size].copy_from_slice(data);
@@ -319,7 +327,7 @@ impl TpmBuffer {
 
     pub fn writeSizedObj<T: TpmMarshaller>(&mut self, obj: &T) -> Result<(), TpmError> {
         const LEN_SIZE: usize = 2; // Length of the object size is always 2 bytes
-        if !self.check_len(LEN_SIZE) {
+        if !self.ensure_write_len(LEN_SIZE) {
             return Ok(());
         }
 
@@ -349,6 +357,9 @@ impl TpmBuffer {
         }
         if size == 0 {
             return Ok(());
+        }
+        if !self.check_read_len(size as usize) {
+            return Err(TpmError::BufferUnderflow);
         }
 
         if size as usize > self.remaining_len() {

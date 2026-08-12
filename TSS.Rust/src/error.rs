@@ -12,6 +12,9 @@ pub enum TpmError {
     /// Buffer overflow occurred during serialization
     BufferOverflow,
 
+    /// Bytes remained after deserializing a complete TPM value
+    TrailingData,
+
     /// Invalid array size
     InvalidArraySize(String),
 
@@ -70,6 +73,7 @@ impl fmt::Display for TpmError {
         match self {
             Self::BufferUnderflow => write!(f, "Buffer underflow during deserialization"),
             Self::BufferOverflow => write!(f, "Buffer overflow during serialization"),
+            Self::TrailingData => write!(f, "Trailing data after TPM value"),
             Self::InvalidArraySize(msg) => write!(f, "Invalid array size: {}", msg),
             Self::InvalidEnumValue => write!(f, "Invalid enum value"),
             Self::InvalidUnion => write!(f, "Invalid union type"),

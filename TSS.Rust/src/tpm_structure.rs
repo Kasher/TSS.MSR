@@ -35,6 +35,68 @@ pub trait TpmStructure: TpmMarshaller {
         self.initFromTpm(&mut tpm_buffer)?;
         tpm_buffer.check_status()
     }
+
+    /// Decode one complete TPM value, rejecting truncated or trailing input.
+    #[allow(non_snake_case)]
+    fn fromBytesExact(bytes: &[u8]) -> Result<Self, TpmError>
+    where
+        Self: Default + Sized,
+    {
+        let mut buffer = TpmBuffer::from(bytes);
+        let value = buffer.createObj::<Self>()?;
+        if buffer.current_pos() != buffer.size() {
+            return Err(TpmError::TrailingData);
+        }
+        Ok(value)
+    }
+}
+
+#[cfg(test)]
+mod exact_decode_tests {
+    use std::panic::catch_unwind;
+
+    use super::*;
+
+    #[test]
+    fn exact_decode_round_trips() {
+        let value = TPM2B_PRIVATE::new(&vec![0xaa, 0xbb]);
+        let bytes = value.toBytes().unwrap();
+
+        let decoded = TPM2B_PRIVATE::fromBytesExact(&bytes).unwrap();
+
+        assert_eq!(decoded.buffer, value.buffer);
+    }
+
+    #[test]
+    fn exact_decode_rejects_truncated_input() {
+        assert!(matches!(
+            TPM2B_PRIVATE::fromBytesExact(&[0, 2, 0xaa]),
+            Err(TpmError::BufferUnderflow)
+        ));
+    }
+
+    #[test]
+    fn exact_decode_rejects_trailing_input() {
+        assert!(matches!(
+            TPM2B_PRIVATE::fromBytesExact(&[0, 1, 0xaa, 0xff]),
+            Err(TpmError::TrailingData)
+        ));
+    }
+
+    #[test]
+    fn malformed_tpm2b_values_do_not_panic() {
+        for length in 0..=64 {
+            let bytes: Vec<u8> = (0..length)
+                .map(|index| (index as u8).wrapping_mul(37).wrapping_add(11))
+                .collect();
+            assert!(catch_unwind(|| TPM2B_PUBLIC::fromBytesExact(&bytes)).is_ok());
+            assert!(catch_unwind(|| TPM2B_PRIVATE::fromBytesExact(&bytes)).is_ok());
+            assert!(catch_unwind(|| TPM2B_ENCRYPTED_SECRET::fromBytesExact(&bytes)).is_ok());
+        }
+
+        let oversized_array = [0xff; 8];
+        assert!(catch_unwind(|| TPML_ALG::fromBytesExact(&oversized_array)).is_ok());
+    }
 }
 
 /// Common trait for all TPM enumeration types
@@ -116,7 +178,9 @@ pub trait RespStructure: CmdStructure {
     fn set_handle(&mut self, _handle: &TPM_HANDLE) {}
 
     /// <summary> Returns the name field from the response, if present </summary>
-    fn get_resp_name(&self) -> Vec<u8> { Vec::new() }
+    fn get_resp_name(&self) -> Vec<u8> {
+        Vec::new()
+    }
 
     /// <summary> Serializable method </summary>
     fn type_name(&self) -> String {
