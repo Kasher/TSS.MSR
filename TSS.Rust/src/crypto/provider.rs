@@ -20,7 +20,10 @@
 //! identical no matter which backend is in use.
 
 use super::RsaKeyParts;
-use crate::{error::TpmError, tpm_types::TPM_ALG_ID};
+use crate::{
+    error::TpmError,
+    tpm_types::{TPM_ALG_ID, TPM_ECC_CURVE},
+};
 
 /// Signature of [`CryptoProvider::hash`].
 pub type HashFn = fn(alg: TPM_ALG_ID, data: &[u8]) -> Result<Vec<u8>, TpmError>;
@@ -60,6 +63,37 @@ pub type RsaGenerateKeypairFn =
 /// Signature of [`RsaOps::pkcs1v15_sign`].
 pub type RsaPkcs1v15SignFn =
     fn(key: &RsaKeyParts, hash_alg: TPM_ALG_ID, digest: &[u8]) -> Result<Vec<u8>, TpmError>;
+
+/// What one ephemeral ECDH agreement produces.
+///
+/// An ECC key cannot be handed a secret the way an RSA key can be handed a ciphertext. The sender
+/// instead generates a throwaway key on the peer's curve and agrees a value with it, and the peer
+/// reproduces that value from its own private key. The ephemeral public point therefore travels in
+/// place of a ciphertext, which is why it is returned alongside the agreed value rather than being
+/// discarded with the private half.
+///
+/// Every field is big endian and zero padded on the left to the curve's coordinate width, so that
+/// a value with leading zero bytes still occupies its full width. The padding is not cosmetic: all
+/// three fields are hashed by [`Crypto::kdfe`](super::Crypto::kdfe), so a short encoding derives a
+/// different key from the one the peer will derive.
+#[derive(Clone, Debug)]
+pub struct EccEphemeralAgreement {
+    /// The agreed value, which is the X coordinate of the agreed point.
+    pub z: Vec<u8>,
+
+    /// The ephemeral public point's X coordinate.
+    pub ephemeral_x: Vec<u8>,
+
+    /// The ephemeral public point's Y coordinate.
+    pub ephemeral_y: Vec<u8>,
+}
+
+/// Signature of [`EccOps::ephemeral_agree`].
+pub type EccEphemeralAgreeFn = fn(
+    curve: TPM_ECC_CURVE,
+    peer_x: &[u8],
+    peer_y: &[u8],
+) -> Result<EccEphemeralAgreement, TpmError>;
 
 /// Returns the error reported by every primitive a provider leaves unimplemented.
 fn unimplemented(operation: &str) -> TpmError {
@@ -117,6 +151,38 @@ impl RsaOps {
     }
 }
 
+/// The elliptic curve primitives a provider supplies.
+///
+/// Split out from [`CryptoProvider`] for the same reason as [`RsaOps`]: a backend that offers no
+/// curve arithmetic at all, or only some of the curves a TPM may nominate, starts from
+/// [`EccOps::new_unimplemented`].
+#[derive(Clone, Copy, Debug)]
+pub struct EccOps {
+    /// Generate an ephemeral key on `curve`, agree with the public point `(peer_x, peer_y)`, and
+    /// return the agreed value together with the ephemeral public point.
+    ///
+    /// Only the raw agreed value is returned. Deriving a key from it is defined by the TPM
+    /// specification rather than by the backend, so it belongs to
+    /// [`Crypto::kdfe`](super::Crypto::kdfe) and is deliberately not delegated here. Some platform
+    /// APIs offer to perform the SP800-56A concatenation themselves; that shortcut is best
+    /// avoided, because at least one of them silently ignores the requested hash algorithm and
+    /// always uses SHA-256. The result is a wrong key that no interoperability failure would
+    /// attribute to the KDF.
+    ///
+    /// A curve the backend cannot agree over must be reported as [`TpmError::NotSupported`]
+    /// rather than approximated with another curve.
+    pub ephemeral_agree: EccEphemeralAgreeFn,
+}
+
+impl EccOps {
+    /// A set of ECC operations that all report [`TpmError::NotSupported`].
+    pub const fn new_unimplemented() -> Self {
+        Self {
+            ephemeral_agree: |_, _, _| Err(unimplemented("ECDH ephemeral key agreement")),
+        }
+    }
+}
+
 /// The cryptographic primitives TSS.Rust needs from its host.
 #[derive(Clone, Copy, Debug)]
 pub struct CryptoProvider {
@@ -138,6 +204,9 @@ pub struct CryptoProvider {
 
     /// The RSA primitives.
     pub rsa: RsaOps,
+
+    /// The elliptic curve primitives.
+    pub ecc: EccOps,
 }
 
 impl CryptoProvider {
@@ -152,6 +221,7 @@ impl CryptoProvider {
             aes_cfb: |_, _, _, _| Err(unimplemented("AES-CFB")),
             random: |_| Err(unimplemented("random number generation")),
             rsa: RsaOps::new_unimplemented(),
+            ecc: EccOps::new_unimplemented(),
         }
     }
 }

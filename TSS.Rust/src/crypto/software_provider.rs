@@ -5,13 +5,19 @@
 //! system already provides can disable the `software-crypto` feature and supply their own
 //! provider instead.
 
-use super::provider::{CryptoProvider, RsaOps};
+use super::provider::{CryptoProvider, EccEphemeralAgreement, EccOps, RsaOps};
 use super::{Crypto, RsaKeyParts};
-use crate::{error::TpmError, tpm_types::TPM_ALG_ID};
+use crate::{
+    error::TpmError,
+    tpm_types::{TPM_ALG_ID, TPM_ECC_CURVE},
+};
 
 use aes::{Aes128, Aes192, Aes256};
 use cipher::generic_array::GenericArray;
 use cipher::{BlockEncrypt, BlockSizeUser, KeyInit};
+use elliptic_curve::ecdh::EphemeralSecret;
+use elliptic_curve::sec1::{EncodedPoint, FromEncodedPoint, ModulusSize, ToEncodedPoint};
+use elliptic_curve::{AffinePoint, CurveArithmetic, FieldBytes, FieldBytesSize, PublicKey};
 use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
 use rsa::traits::{PrivateKeyParts, PublicKeyParts};
@@ -31,6 +37,9 @@ pub static SOFTWARE_PROVIDER: CryptoProvider = CryptoProvider {
         pkcs1v15_verify: rsa_pkcs1v15_verify,
         generate_keypair: rsa_generate_keypair,
         pkcs1v15_sign: rsa_pkcs1v15_sign,
+    },
+    ecc: EccOps {
+        ephemeral_agree: ecc_ephemeral_agree,
     },
 };
 
@@ -317,4 +326,74 @@ fn random(out: &mut [u8]) -> Result<(), TpmError> {
     OsRng
         .try_fill_bytes(out)
         .map_err(|e| TpmError::GenericError(format!("Failed to obtain random bytes: {e}")))
+}
+
+/// Dispatches to the curve's own arithmetic, since each is a distinct type.
+///
+/// Only the NIST prime curves appear. A TPM may also nominate Barreto-Naehrig or SM2 curves, for
+/// which RustCrypto offers no ECDH implementation; they are rejected rather than approximated,
+/// because agreeing over the wrong curve would silently derive a key the peer cannot reproduce.
+fn ecc_ephemeral_agree(
+    curve: TPM_ECC_CURVE,
+    peer_x: &[u8],
+    peer_y: &[u8],
+) -> Result<EccEphemeralAgreement, TpmError> {
+    match curve {
+        TPM_ECC_CURVE::NIST_P256 => agree_on::<p256::NistP256>(peer_x, peer_y),
+        TPM_ECC_CURVE::NIST_P384 => agree_on::<p384::NistP384>(peer_x, peer_y),
+        TPM_ECC_CURVE::NIST_P521 => agree_on::<p521::NistP521>(peer_x, peer_y),
+        other => Err(TpmError::NotSupported(format!(
+            "This provider cannot perform ECDH over curve {other}"
+        ))),
+    }
+}
+
+/// One ephemeral agreement over a single curve.
+///
+/// The curve's own field width is used rather than a looked-up constant, so the coordinates handed
+/// to the curve implementation are of exactly the length it expects and no length mismatch can
+/// arise between the two.
+fn agree_on<C>(peer_x: &[u8], peer_y: &[u8]) -> Result<EccEphemeralAgreement, TpmError>
+where
+    C: CurveArithmetic,
+    FieldBytesSize<C>: ModulusSize,
+    AffinePoint<C>: FromEncodedPoint<C> + ToEncodedPoint<C>,
+{
+    let width = FieldBytes::<C>::default().len();
+    let x = Crypto::pad_ecc_coordinate(peer_x, width)?;
+    let y = Crypto::pad_ecc_coordinate(peer_y, width)?;
+
+    let encoded = EncodedPoint::<C>::from_affine_coordinates(
+        FieldBytes::<C>::from_slice(&x),
+        FieldBytes::<C>::from_slice(&y),
+        false,
+    );
+
+    // A point off the curve, or the point at infinity, is rejected here. Agreeing with it would
+    // otherwise produce a value carrying no secret at all.
+    let peer: PublicKey<C> = Option::from(PublicKey::<C>::from_encoded_point(&encoded))
+        .ok_or_else(|| {
+            TpmError::NotSupported(
+                "The ECC public point is not a valid point on its curve".to_string(),
+            )
+        })?;
+
+    let ephemeral = EphemeralSecret::<C>::random(&mut OsRng);
+    let ephemeral_point = ephemeral.public_key().to_encoded_point(false);
+
+    // Uncompressed encoding was requested above, so both coordinates are present unless the point
+    // is the identity, which a freshly generated key cannot be.
+    let missing =
+        || TpmError::GenericError("The ephemeral public point has no coordinates".to_string());
+    let ephemeral_x = ephemeral_point.x().ok_or_else(missing)?.to_vec();
+    let ephemeral_y = ephemeral_point.y().ok_or_else(missing)?.to_vec();
+
+    // The shared secret is the agreed point's X coordinate, already at the curve's full width.
+    let z = ephemeral.diffie_hellman(&peer).raw_secret_bytes().to_vec();
+
+    Ok(EccEphemeralAgreement {
+        z,
+        ephemeral_x,
+        ephemeral_y,
+    })
 }

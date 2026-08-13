@@ -17,7 +17,7 @@ pub mod provider;
 pub mod software_provider;
 
 use crate::{error::TpmError, tpm_types::*};
-use provider::CryptoProvider;
+use provider::{CryptoProvider, EccEphemeralAgreement};
 
 /// The RSA public exponent the TPM 2.0 specification defines as the default (65537, "F4").
 ///
@@ -151,6 +151,66 @@ impl Crypto {
         (provider.rsa.pkcs1v15_sign)(key, hash_alg, digest)
     }
 
+    /// The width in bytes of one coordinate on `curve`.
+    ///
+    /// This is a property of the curve as the TCG registry defines it, not of the backend, so it
+    /// is answered here and every provider agrees on it. It matters because a TPM may drop leading
+    /// zero bytes from a coordinate it marshals into a `TPM2B`, while the key derivation hashes
+    /// coordinates at their full width. Padding a short coordinate back out before it reaches
+    /// [`Crypto::kdfe`] is what keeps both sides deriving the same value.
+    ///
+    /// A curve outside the registry is an error rather than a guess, because guessing a width
+    /// produces a plausible-looking key that simply does not match the peer's.
+    pub fn ecc_coordinate_size(curve: TPM_ECC_CURVE) -> Result<usize, TpmError> {
+        match curve {
+            TPM_ECC_CURVE::NIST_P192 => Ok(24),
+            TPM_ECC_CURVE::NIST_P224 => Ok(28),
+            TPM_ECC_CURVE::NIST_P256 => Ok(32),
+            TPM_ECC_CURVE::NIST_P384 => Ok(48),
+            // P-521's order is 521 bits, which occupies 66 bytes with the top 7 bits unused.
+            TPM_ECC_CURVE::NIST_P521 => Ok(66),
+            TPM_ECC_CURVE::BN_P256 => Ok(32),
+            TPM_ECC_CURVE::BN_P638 => Ok(80),
+            TPM_ECC_CURVE::SM2_P256 => Ok(32),
+            other => Err(TpmError::NotSupported(format!(
+                "Unknown ECC curve {other}, so its coordinate width is unknown"
+            ))),
+        }
+    }
+
+    /// Left pads an ECC coordinate to a fixed width.
+    ///
+    /// A TPM is free to drop leading zero bytes when it marshals a coordinate into a `TPM2B`, so a
+    /// coordinate arriving short is normal and is restored here. One arriving long belongs to a
+    /// different curve than the caller believes, which is an error rather than something to
+    /// truncate.
+    pub fn pad_ecc_coordinate(value: &[u8], width: usize) -> Result<Vec<u8>, TpmError> {
+        if value.len() > width {
+            return Err(TpmError::InvalidArraySize(format!(
+                "A {} byte coordinate does not fit a {} byte curve",
+                value.len(),
+                width
+            )));
+        }
+
+        let mut padded = vec![0u8; width - value.len()];
+        padded.extend_from_slice(value);
+        Ok(padded)
+    }
+
+    /// Generate an ephemeral key on `curve` and agree with the public point `(peer_x, peer_y)`.
+    ///
+    /// The agreed value is returned raw. Callers wanting key material run [`Crypto::kdfe`] over
+    /// it, which is where the TPM's derivation is defined.
+    pub fn ecc_ephemeral_agree(
+        provider: &CryptoProvider,
+        curve: TPM_ECC_CURVE,
+        peer_x: &[u8],
+        peer_y: &[u8],
+    ) -> Result<EccEphemeralAgreement, TpmError> {
+        (provider.ecc.ephemeral_agree)(curve, peer_x, peer_y)
+    }
+
     pub fn validate_signature(
         provider: &CryptoProvider,
         public_key: &TPMT_PUBLIC,
@@ -255,6 +315,81 @@ impl Crypto {
         }
 
         // Truncate to exact size needed
+        result.truncate(bytes_needed);
+        Ok(result)
+    }
+
+    /// KDFe, the derivation TPM 2.0 Part 1 section 11.4.10.3 defines for ECDH secret sharing.
+    ///
+    /// This is the SP800-56A concatenation KDF. Each iteration hashes a big endian counter, the
+    /// agreed value, the label and both parties' contributions; the iterations are concatenated
+    /// and truncated to the requested length.
+    ///
+    /// It differs from [`Crypto::kdfa`] in two ways that are easy to conflate. It hashes rather
+    /// than HMACs, so the agreed value is part of the hashed input instead of being a key. And the
+    /// requested length is not itself hashed, where KDFa appends it to every iteration. Using one
+    /// where the other is meant yields output of the right shape and the wrong value.
+    ///
+    /// `party_u_info` is the initiator's X coordinate and `party_v_info` the responder's. Both
+    /// ends have to make the same assignment regardless of which role they are playing, so a
+    /// party reproducing an agreement keeps the originator's point as U even though it is the one
+    /// receiving. Swapping them derives a different value in silence.
+    ///
+    /// Coordinates must arrive at the curve's full width; see [`Crypto::ecc_coordinate_size`].
+    pub fn kdfe(
+        provider: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        z: &[u8],
+        label: &str,
+        party_u_info: &[u8],
+        party_v_info: &[u8],
+        bits: usize,
+    ) -> Result<Vec<u8>, TpmError> {
+        // As in KDFa, zero bits would exit the loop immediately and hand back an empty key that
+        // every caller would then treat as real key material.
+        if bits == 0 {
+            return Err(TpmError::InvalidArraySize(
+                "KDFe was asked to produce zero bits of key material".to_string(),
+            ));
+        }
+
+        // An agreement that produced nothing cannot key anything, and hashing an empty Z would
+        // still yield plausible-looking output.
+        if z.is_empty() {
+            return Err(TpmError::InvalidArraySize(
+                "KDFe was given an empty agreed value".to_string(),
+            ));
+        }
+
+        let bytes_needed = bits.div_ceil(8);
+        let mut result = Vec::new();
+        let mut counter = 1u32;
+
+        while result.len() < bytes_needed {
+            let mut to_hash = Vec::new();
+
+            // Counter in big-endian
+            to_hash.extend_from_slice(&counter.to_be_bytes());
+
+            // The agreed value
+            to_hash.extend_from_slice(z);
+
+            // Label, with the terminating NUL the specification includes in the hash
+            to_hash.extend_from_slice(label.as_bytes());
+            to_hash.push(0u8);
+
+            // Each party's contribution
+            to_hash.extend_from_slice(party_u_info);
+            to_hash.extend_from_slice(party_v_info);
+
+            let digest = Self::hash(provider, hash_alg, &to_hash)?;
+            result.extend_from_slice(&digest);
+
+            counter = counter.checked_add(1).ok_or_else(|| {
+                TpmError::InvalidArraySize("Counter overflow in KDFe".to_string())
+            })?;
+        }
+
         result.truncate(bytes_needed);
         Ok(result)
     }
@@ -501,6 +636,115 @@ mod tests {
         )?;
         assert_eq!(derived.len(), 32);
         Ok(())
+    }
+
+    /// KDFe against a value computed outside this crate.
+    ///
+    /// The round trip in `tpm_type_extensions` runs both ends of an activation through this same
+    /// function, so it would agree with itself even if the construction were wrong. This pins the
+    /// construction to an independently derived answer instead.
+    #[test]
+    fn kdfe_matches_an_independently_computed_vector() -> Result<(), TpmError> {
+        let z = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+            0xcc, 0xdd, 0xee, 0xff,
+        ];
+        let party_u = [0xaau8; 32];
+        let party_v = [0xbbu8; 32];
+
+        // SHA256(BE32(1) || Z || "IDENTITY" || 0x00 || partyU || partyV).
+        let one_block =
+            hex_to_bytes("32721732041999b0cde95bc6f0702059883b6ddf7ba7635ffc3e3c09f4914cd4");
+
+        let derived = Crypto::kdfe(
+            &SOFTWARE_PROVIDER,
+            TPM_ALG_ID::SHA256,
+            &z,
+            "IDENTITY",
+            &party_u,
+            &party_v,
+            256,
+        )?;
+        assert_eq!(
+            derived, one_block,
+            "KDFe should hash the counter, Z, the NUL terminated label and both parties, and \
+             nothing else. In particular the requested length is not hashed, which is where it \
+             differs from KDFa."
+        );
+
+        // A second block continues with counter 2 rather than restarting.
+        let two_blocks = hex_to_bytes(
+            "32721732041999b0cde95bc6f0702059883b6ddf7ba7635ffc3e3c09f4914cd4\
+             b2f1a09b1730caf33fea691a5aac61ac2a064c64c0688fd3588776ed5cd6e5ec",
+        );
+        assert_eq!(
+            Crypto::kdfe(
+                &SOFTWARE_PROVIDER,
+                TPM_ALG_ID::SHA256,
+                &z,
+                "IDENTITY",
+                &party_u,
+                &party_v,
+                512
+            )?,
+            two_blocks
+        );
+
+        // A length that is not a whole number of digests is truncated, not rounded up.
+        assert_eq!(
+            Crypto::kdfe(
+                &SOFTWARE_PROVIDER,
+                TPM_ALG_ID::SHA256,
+                &z,
+                "IDENTITY",
+                &party_u,
+                &party_v,
+                200
+            )?,
+            one_block[..25]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn kdfe_rejects_inputs_that_would_yield_unusable_key_material() {
+        let z = [0x01u8; 32];
+
+        // Zero bits would leave the loop immediately and return an empty key that callers would
+        // treat as real, which is the same trap KDFa had.
+        assert!(
+            Crypto::kdfe(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, &z, "IDENTITY", &[], &[], 0)
+                .is_err()
+        );
+
+        // An agreement that produced nothing cannot key anything, but hashing it would still
+        // yield output that looks like a key.
+        assert!(Crypto::kdfe(
+            &SOFTWARE_PROVIDER,
+            TPM_ALG_ID::SHA256,
+            &[],
+            "IDENTITY",
+            &[],
+            &[],
+            256
+        )
+        .is_err());
+    }
+
+    fn hex_to_bytes(hex: &str) -> Vec<u8> {
+        let digits: Vec<u8> = hex
+            .bytes()
+            .filter(|b| !b.is_ascii_whitespace())
+            .map(|b| match b {
+                b'0'..=b'9' => b - b'0',
+                b'a'..=b'f' => b - b'a' + 10,
+                _ => panic!("test vector is not hexadecimal"),
+            })
+            .collect();
+
+        digits.chunks(2).map(|p| (p[0] << 4) | p[1]).collect()
     }
 
     #[test]

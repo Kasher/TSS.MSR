@@ -124,52 +124,42 @@ impl TPMT_PUBLIC {
     }
 
     /// Implements the TPM2_MakeCredential command functionality:
-    /// 1. Generate random seed
-    /// 2. RSA-OAEP encrypt seed with label "IDENTITY"
-    /// 3. Derive symmetric key via KDFa
-    /// 4. Encrypt credential + create integrity HMAC
+    /// 1. Establish a seed and the secret that conveys it to the TPM
+    /// 2. Derive symmetric key via KDFa
+    /// 3. Encrypt credential + create integrity HMAC
+    ///
+    /// Both RSA and ECC storage keys are accepted. The two differ only in how the seed reaches the
+    /// TPM, which [`Self::produce_seed`] handles; everything after that is defined on the seed
+    /// alone and so is shared.
     pub fn create_activation(
         &self,
         crypto: &CryptoProvider,
         credential: &[u8],
         activated_name: &[u8],
     ) -> Result<ActivationData, TpmError> {
-        // Verify we have an RSA key with correct parameters
-        let rsa_params = if let Some(TPMU_PUBLIC_PARMS::rsaDetail(params)) = &self.parameters {
-            params
-        } else {
-            return Err(TpmError::NotSupported("Only RSA activation supported".to_string()));
+        // The wrapping scheme lives in the algorithm-specific parameters, but the constraint on it
+        // is the same either way, so it is checked once here.
+        let sym_def = match &self.parameters {
+            Some(TPMU_PUBLIC_PARMS::rsaDetail(params)) => &params.symmetric,
+            Some(TPMU_PUBLIC_PARMS::eccDetail(params)) => &params.symmetric,
+            _ => {
+                return Err(TpmError::NotSupported(
+                    "Activation requires an RSA or ECC storage key".to_string(),
+                ))
+            }
         };
 
-        // Check symmetric definition
-        let sym_def = &rsa_params.symmetric;
-        if sym_def.algorithm != TPM_ALG_ID::AES 
-            || sym_def.keyBits != 128 
-            || sym_def.mode != TPM_ALG_ID::CFB {
+        if sym_def.algorithm != TPM_ALG_ID::AES
+            || sym_def.keyBits != 128
+            || sym_def.mode != TPM_ALG_ID::CFB
+        {
             return Err(TpmError::NotSupported("Unsupported wrapping scheme".to_string()));
         }
 
         // The seed is the same size as the nameAlg digest, per TPM 2.0 Part 1 "Credential
         // Protection". TSS.NET does the same in TpmKey.CreateActivationCredentials.
         let name_alg_size = Crypto::digest_size_checked(self.nameAlg)?;
-        let mut seed = Crypto::get_random(crypto, name_alg_size)?;
-
-        // Get RSA public key components for encrypting the seed
-        let rsa_pub_n = if let Some(TPMU_PUBLIC_ID::rsa(unique)) = &self.unique {
-            &unique.buffer
-        } else {
-            return Err(TpmError::NotSupported("Invalid RSA public key".to_string()));
-        };
-
-        // Encrypt seed with label "IDENTITY" using OAEP with the key's nameAlg
-        let secret = Crypto::rsa_oaep_encrypt(
-            crypto,
-            rsa_pub_n,
-            &rsa_params.exponent_bytes(),
-            self.nameAlg,
-            b"IDENTITY\0",
-            &seed,
-        )?;
+        let (mut seed, secret) = self.produce_seed(crypto, name_alg_size)?;
 
         // Make the credential blob:
 
@@ -230,6 +220,76 @@ impl TPMT_PUBLIC {
             credential_blob: TPMS_ID_OBJECT::new(&integrity_hmac, &enc_credential),
             secret,
         })
+    }
+
+    /// Establishes the activation seed and the `secret` that lets this key's TPM recover it.
+    ///
+    /// This is the whole of the difference between an RSA and an ECC activation. With RSA the seed
+    /// is chosen at random and the secret is that seed encrypted to the public key. With ECC no
+    /// value is transported at all: both sides derive the seed from an ECDH agreement, and the
+    /// secret is the ephemeral public point the TPM needs to repeat that agreement.
+    ///
+    /// Returns the seed and the secret, in that order.
+    fn produce_seed(
+        &self,
+        crypto: &CryptoProvider,
+        name_alg_size: usize,
+    ) -> Result<(Vec<u8>, Vec<u8>), TpmError> {
+        match (&self.parameters, &self.unique) {
+            (Some(TPMU_PUBLIC_PARMS::rsaDetail(params)), Some(TPMU_PUBLIC_ID::rsa(unique))) => {
+                let seed = Crypto::get_random(crypto, name_alg_size)?;
+
+                // Encrypt seed with label "IDENTITY" using OAEP with the key's nameAlg
+                let secret = Crypto::rsa_oaep_encrypt(
+                    crypto,
+                    &unique.buffer,
+                    &params.exponent_bytes(),
+                    self.nameAlg,
+                    b"IDENTITY\0",
+                    &seed,
+                )?;
+
+                Ok((seed, secret))
+            }
+
+            (Some(TPMU_PUBLIC_PARMS::eccDetail(params)), Some(TPMU_PUBLIC_ID::ecc(point))) => {
+                let curve = params.curveID;
+                let agreement = Crypto::ecc_ephemeral_agree(crypto, curve, &point.x, &point.y)?;
+
+                // KDFe hashes both coordinates, so a coordinate the TPM marshalled without its
+                // leading zeroes has to be restored to full width or the two sides hash different
+                // inputs and derive different seeds.
+                let width = Crypto::ecc_coordinate_size(curve)?;
+                let party_v_info = Crypto::pad_ecc_coordinate(&point.x, width)?;
+
+                // partyU is the initiator, which is this side, and partyV the key's owner. The TPM
+                // makes the same assignment when it repeats the agreement, even though its own
+                // role is the opposite one.
+                let seed = Crypto::kdfe(
+                    crypto,
+                    self.nameAlg,
+                    &agreement.z,
+                    "IDENTITY",
+                    &agreement.ephemeral_x,
+                    &party_v_info,
+                    name_alg_size * 8,
+                )?;
+
+                // The secret is the ephemeral point marshalled as a TPMS_ECC_POINT, so each
+                // coordinate carries its own size. It is not a bare concatenation.
+                let secret = TPMS_ECC_POINT::new(&agreement.ephemeral_x, &agreement.ephemeral_y)
+                    .toBytes()?;
+
+                Ok((seed, secret))
+            }
+
+            _ => Err(TpmError::NotSupported(format!(
+                "Activation is not supported for a public area whose parameters are {:?} and \
+                 whose unique field is {:?}",
+                self.parameters.as_ref().map(std::mem::discriminant),
+                self.unique.as_ref().map(std::mem::discriminant),
+            ))),
+        }
     }
 
     // Performs RSA encryption of the given data using the public key
@@ -493,6 +553,11 @@ impl TSS_KEY {
 mod tests {
     use super::*;
     use crate::crypto::software_provider::SOFTWARE_PROVIDER;
+    use elliptic_curve::ecdh::diffie_hellman;
+    use elliptic_curve::sec1::{EncodedPoint, FromEncodedPoint, ModulusSize, ToEncodedPoint};
+    use elliptic_curve::{
+        AffinePoint, CurveArithmetic, FieldBytes, FieldBytesSize, PublicKey, SecretKey,
+    };
     use rand::rngs::OsRng;
     use rsa::traits::PublicKeyParts;
     use rsa::{Oaep, RsaPrivateKey};
@@ -530,29 +595,16 @@ mod tests {
         vec![0xab; 2 + Crypto::digestSize(name_alg)]
     }
 
-    /// Play the part of `TPM2_ActivateCredential` so `create_activation` can be exercised end
-    /// to end without a TPM.
+    /// Play the part of `TPM2_ActivateCredential` once the seed has been recovered.
+    ///
+    /// Everything here is defined on the seed alone, so it serves an RSA and an ECC activation
+    /// alike. Only the step that produces the seed differs between them.
     fn activate_credential(
-        endorsement_private: &RsaPrivateKey,
+        seed: &[u8],
         name_alg: TPM_ALG_ID,
         activated_name: &[u8],
         activation: &ActivationData,
     ) -> Result<Vec<u8>, TpmError> {
-        let padding = match name_alg {
-            TPM_ALG_ID::SHA1 => Oaep::new_with_label::<Sha1, _>("IDENTITY\0"),
-            TPM_ALG_ID::SHA256 => Oaep::new_with_label::<Sha256, _>("IDENTITY\0"),
-            _ => {
-                return Err(TpmError::NotSupported(format!(
-                    "Unsupported nameAlg for OAEP: {:?}",
-                    name_alg
-                )))
-            }
-        };
-
-        let seed = endorsement_private
-            .decrypt(padding, &activation.secret)
-            .map_err(|e| TpmError::GenericError(format!("Seed decryption failed: {e}")))?;
-
         // A TPM rejects a seed whose size is not the nameAlg digest size: TPM 2.0 Part 4,
         // CryptSecretDecrypt, returns TPM_RC_VALUE. Modelling that check here is what makes
         // this test able to catch a wrongly sized seed, because the seed itself travels inside
@@ -567,11 +619,11 @@ mod tests {
             )));
         }
 
-        let sym_key = Crypto::kdfa(&SOFTWARE_PROVIDER, name_alg, &seed, "STORAGE", activated_name, &[], 128)?;
+        let sym_key = Crypto::kdfa(&SOFTWARE_PROVIDER, name_alg, seed, "STORAGE", activated_name, &[], 128)?;
         let hmac_key = Crypto::kdfa(
             &SOFTWARE_PROVIDER,
             name_alg,
-            &seed,
+            seed,
             "INTEGRITY",
             &[],
             &[],
@@ -611,6 +663,117 @@ mod tests {
             })
     }
 
+    /// Recover an RSA activation's seed the way a TPM would, by decrypting it.
+    fn rsa_recover_seed(
+        endorsement_private: &RsaPrivateKey,
+        name_alg: TPM_ALG_ID,
+        secret: &[u8],
+    ) -> Result<Vec<u8>, TpmError> {
+        let padding = match name_alg {
+            TPM_ALG_ID::SHA1 => Oaep::new_with_label::<Sha1, _>("IDENTITY\0"),
+            TPM_ALG_ID::SHA256 => Oaep::new_with_label::<Sha256, _>("IDENTITY\0"),
+            _ => {
+                return Err(TpmError::NotSupported(format!(
+                    "Unsupported nameAlg for OAEP: {:?}",
+                    name_alg
+                )))
+            }
+        };
+
+        endorsement_private
+            .decrypt(padding, secret)
+            .map_err(|e| TpmError::GenericError(format!("Seed decryption failed: {e}")))
+    }
+
+    /// A software stand-in for an ECC storage key, along with its public area.
+    fn ecc_endorsement_key<C>(
+        curve: TPM_ECC_CURVE,
+        name_alg: TPM_ALG_ID,
+    ) -> Result<(SecretKey<C>, TPMT_PUBLIC), TpmError>
+    where
+        C: CurveArithmetic,
+        FieldBytesSize<C>: ModulusSize,
+        AffinePoint<C>: FromEncodedPoint<C> + ToEncodedPoint<C>,
+    {
+        let private_key = SecretKey::<C>::random(&mut OsRng);
+        let point = private_key.public_key().to_encoded_point(false);
+        let missing =
+            || TpmError::GenericError("The generated point has no coordinates".to_string());
+
+        let parameters = TPMS_ECC_PARMS::new(
+            &TPMT_SYM_DEF_OBJECT::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
+            &Some(TPMU_ASYM_SCHEME::null(TPMS_NULL_ASYM_SCHEME::default())),
+            curve,
+            &Some(TPMU_KDF_SCHEME::null(TPMS_NULL_KDF_SCHEME::default())),
+        );
+
+        let public_area = TPMT_PUBLIC {
+            nameAlg: name_alg,
+            parameters: Some(TPMU_PUBLIC_PARMS::eccDetail(parameters)),
+            unique: Some(TPMU_PUBLIC_ID::ecc(TPMS_ECC_POINT::new(
+                &point.x().ok_or_else(missing)?.to_vec(),
+                &point.y().ok_or_else(missing)?.to_vec(),
+            ))),
+            ..Default::default()
+        };
+
+        Ok((private_key, public_area))
+    }
+
+    /// Recover an ECC activation's seed the way a TPM would, by repeating the agreement.
+    ///
+    /// Nothing is decrypted here, because nothing was transported. The TPM agrees its own private
+    /// key with the ephemeral point it was handed and derives the same seed the caller did.
+    fn ecc_recover_seed<C>(
+        private_key: &SecretKey<C>,
+        name_alg: TPM_ALG_ID,
+        secret: &[u8],
+    ) -> Result<Vec<u8>, TpmError>
+    where
+        C: CurveArithmetic,
+        FieldBytesSize<C>: ModulusSize,
+        AffinePoint<C>: FromEncodedPoint<C> + ToEncodedPoint<C>,
+    {
+        // The secret is a marshalled TPMS_ECC_POINT, so each coordinate arrives sized.
+        let mut ephemeral_point = TPMS_ECC_POINT::default();
+        ephemeral_point.initFromTpm(&mut TpmBuffer::from(secret))?;
+
+        let width = FieldBytes::<C>::default().len();
+        let ephemeral_x = Crypto::pad_ecc_coordinate(&ephemeral_point.x, width)?;
+        let ephemeral_y = Crypto::pad_ecc_coordinate(&ephemeral_point.y, width)?;
+
+        let encoded = EncodedPoint::<C>::from_affine_coordinates(
+            FieldBytes::<C>::from_slice(&ephemeral_x),
+            FieldBytes::<C>::from_slice(&ephemeral_y),
+            false,
+        );
+        let ephemeral_public: PublicKey<C> =
+            Option::from(PublicKey::<C>::from_encoded_point(&encoded)).ok_or_else(|| {
+                TpmError::GenericError("The ephemeral point is not on the curve".to_string())
+            })?;
+
+        let z = diffie_hellman(private_key.to_nonzero_scalar(), ephemeral_public.as_affine());
+
+        // The TPM is the responder, yet it still names the originator's point as partyU. Deriving
+        // with the roles reversed would produce a different seed in silence, which is why this
+        // assignment is written the same way on both sides.
+        let own_point = private_key.public_key().to_encoded_point(false);
+        let own_x = own_point
+            .x()
+            .ok_or_else(|| TpmError::GenericError("The key has no X coordinate".to_string()))?
+            .to_vec();
+
+        Crypto::kdfe(
+            &SOFTWARE_PROVIDER,
+            name_alg,
+            z.raw_secret_bytes(),
+            "IDENTITY",
+            &ephemeral_x,
+            &own_x,
+            Crypto::digestSize(name_alg) * 8,
+        )
+    }
+
     #[test]
     fn create_activation_round_trips_through_a_software_activate() -> Result<(), TpmError> {
         for name_alg in [TPM_ALG_ID::SHA1, TPM_ALG_ID::SHA256] {
@@ -623,16 +786,121 @@ mod tests {
                 &credential,
                 &activated_name,
             )?;
-            let recovered = activate_credential(
-                &endorsement_private,
-                name_alg,
-                &activated_name,
-                &activation,
-            )?;
+            let seed = rsa_recover_seed(&endorsement_private, name_alg, &activation.secret)?;
+            let recovered = activate_credential(&seed, name_alg, &activated_name, &activation)?;
 
             assert_eq!(recovered, credential, "nameAlg {:?}", name_alg);
         }
 
+        Ok(())
+    }
+
+    /// The whole ECC activation, exercised against a stand-in that repeats the agreement.
+    ///
+    /// A curve is passed both as a `TPM_ECC_CURVE` and as its Rust type, so a mismatch between the
+    /// two would show up as a failed round trip rather than passing unnoticed.
+    fn ecc_round_trip<C>(curve: TPM_ECC_CURVE, name_alg: TPM_ALG_ID) -> Result<(), TpmError>
+    where
+        C: CurveArithmetic,
+        FieldBytesSize<C>: ModulusSize,
+        AffinePoint<C>: FromEncodedPoint<C> + ToEncodedPoint<C>,
+    {
+        let (private_key, public_area) = ecc_endorsement_key::<C>(curve, name_alg)?;
+        let activated_name = activated_name(name_alg);
+        let credential = b"credential to activate".to_vec();
+
+        let activation =
+            public_area.create_activation(&SOFTWARE_PROVIDER, &credential, &activated_name)?;
+        let seed = ecc_recover_seed::<C>(&private_key, name_alg, &activation.secret)?;
+        let recovered = activate_credential(&seed, name_alg, &activated_name, &activation)?;
+
+        assert_eq!(recovered, credential, "curve {:?}, nameAlg {:?}", curve, name_alg);
+        Ok(())
+    }
+
+    #[test]
+    fn ecc_activation_round_trips_on_every_supported_curve() -> Result<(), TpmError> {
+        for name_alg in [TPM_ALG_ID::SHA1, TPM_ALG_ID::SHA256, TPM_ALG_ID::SHA384] {
+            ecc_round_trip::<p256::NistP256>(TPM_ECC_CURVE::NIST_P256, name_alg)?;
+            ecc_round_trip::<p384::NistP384>(TPM_ECC_CURVE::NIST_P384, name_alg)?;
+            ecc_round_trip::<p521::NistP521>(TPM_ECC_CURVE::NIST_P521, name_alg)?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn ecc_activation_secret_is_a_marshalled_point() -> Result<(), TpmError> {
+        // Two sized coordinates, not a bare concatenation. A TPM parses this field as a
+        // TPMS_ECC_POINT, so a concatenation would be read as a single overlong X.
+        let (_, public_area) =
+            ecc_endorsement_key::<p256::NistP256>(TPM_ECC_CURVE::NIST_P256, TPM_ALG_ID::SHA256)?;
+        let activation = public_area.create_activation(
+            &SOFTWARE_PROVIDER,
+            b"credential",
+            &activated_name(TPM_ALG_ID::SHA256),
+        )?;
+
+        assert_eq!(
+            activation.secret.len(),
+            2 + 32 + 2 + 32,
+            "P-256 point should be two sized 32 byte coordinates"
+        );
+
+        let mut point = TPMS_ECC_POINT::default();
+        point.initFromTpm(&mut TpmBuffer::from(&activation.secret))?;
+        assert_eq!(point.x.len(), 32);
+        assert_eq!(point.y.len(), 32);
+        Ok(())
+    }
+
+    #[test]
+    fn ecc_activation_rejects_a_curve_without_an_implementation() -> Result<(), TpmError> {
+        // The registry defines these, so their coordinate width is known, but no agreement is
+        // available for them. Silently substituting a NIST curve would derive an unusable seed.
+        for curve in [TPM_ECC_CURVE::BN_P256, TPM_ECC_CURVE::SM2_P256] {
+            let (_, mut public_area) = ecc_endorsement_key::<p256::NistP256>(
+                TPM_ECC_CURVE::NIST_P256,
+                TPM_ALG_ID::SHA256,
+            )?;
+
+            if let Some(TPMU_PUBLIC_PARMS::eccDetail(params)) = &mut public_area.parameters {
+                params.curveID = curve;
+            }
+
+            assert!(
+                public_area
+                    .create_activation(
+                        &SOFTWARE_PROVIDER,
+                        b"credential",
+                        &activated_name(TPM_ALG_ID::SHA256)
+                    )
+                    .is_err(),
+                "curve {:?} should be rejected",
+                curve
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn ecc_coordinate_size_agrees_with_the_curve_implementations() -> Result<(), TpmError> {
+        // The provider pads with the width its curve crate reports, while create_activation pads
+        // the peer's coordinate with the width from the registry table. The two feed the same
+        // KDFe, so a disagreement between them would derive mismatched seeds.
+        assert_eq!(
+            Crypto::ecc_coordinate_size(TPM_ECC_CURVE::NIST_P256)?,
+            FieldBytes::<p256::NistP256>::default().len()
+        );
+        assert_eq!(
+            Crypto::ecc_coordinate_size(TPM_ECC_CURVE::NIST_P384)?,
+            FieldBytes::<p384::NistP384>::default().len()
+        );
+        assert_eq!(
+            Crypto::ecc_coordinate_size(TPM_ECC_CURVE::NIST_P521)?,
+            FieldBytes::<p521::NistP521>::default().len()
+        );
         Ok(())
     }
 
