@@ -30,6 +30,10 @@ software-crypto = [
     "dep:sm3",
 ]
 
+# Build the CNG-backed CryptoProvider. This adds no dependencies: it calls bcrypt.dll through the
+# windows bindings the crate already uses, and it is inert on non-Windows targets.
+cng-crypto = []
+
 [dependencies]
 derivative = "2.2.0"
 lazy_static = "1.5.0"
@@ -55,7 +59,7 @@ p384 = { version = "0.13", default-features = false, features = ["ecdh"], option
 p521 = { version = "0.13", default-features = false, features = ["ecdh"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61.1", features = ["Win32_Foundation", "Win32_Security", "Win32_System_TpmBaseServices", "Win32_Networking", "Win32_Networking_WinSock"] }
+windows = { version = "0.61.1", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_TpmBaseServices", "Win32_Networking", "Win32_Networking_WinSock"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
