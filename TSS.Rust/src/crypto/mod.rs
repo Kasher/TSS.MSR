@@ -424,7 +424,7 @@ impl Crypto {
         // Unlike KDFa, the hashed input contains the agreed value itself, so the buffer holding it
         // is as sensitive as `z` and is wiped on the same terms. Its length is the same on every
         // iteration, so reserving it exactly means the one allocation is the only copy made.
-        let hashed_len = size_of_val(&counter)
+        let hashed_len = std::mem::size_of_val(&counter)
             + z.len()
             + label.len()
             + 1
