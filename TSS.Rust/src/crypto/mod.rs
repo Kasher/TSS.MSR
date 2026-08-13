@@ -262,6 +262,44 @@ impl Crypto {
         )
     }
 
+    /// Reduce a generated KDF stream to `bits` bits, as TPM 2.0 Part 1 section 11.4.10 requires.
+    ///
+    /// Both KDFs generate whole digests, so the stream is normally longer than the request. The
+    /// bits kept are the leftmost ones, and they come back right aligned in the fewest octets that
+    /// hold them: a request that is not a whole number of octets leaves the unused bits of the
+    /// leading octet zero rather than handing back extra significant bits. Simply truncating to
+    /// whole octets would return a different value, which is why TSS.NET and TSS.CPP both shift
+    /// their stream instead (`CryptoLib.KDFa` and `Crypto::KDFa` respectively).
+    ///
+    /// Every KDF call the TPM 2.0 protocol makes of itself asks for a digest or symmetric key
+    /// size, all of which are whole octets, and for those this is exactly a truncation. The shift
+    /// matters only to a caller using these KDFs for something the TPM does not.
+    ///
+    /// `stream` must hold at least `bits` bits, which both callers guarantee by generating whole
+    /// digests until it does.
+    fn truncate_kdf_stream(stream: &[u8], bits: usize) -> Vec<u8> {
+        debug_assert!(
+            stream.len() * 8 >= bits,
+            "KDF stream is shorter than the request"
+        );
+
+        let octets_needed = bits.div_ceil(8);
+        let bit_shift = (stream.len() * 8 - bits) % 8;
+        let mut result = stream[..octets_needed].to_vec();
+
+        if bit_shift != 0 {
+            // A big endian right shift: every octet takes the bits falling out of the one above it.
+            let mut carry = 0u8;
+            for octet in result.iter_mut() {
+                let fell_out = *octet << (8 - bit_shift);
+                *octet = (*octet >> bit_shift) | carry;
+                carry = fell_out;
+            }
+        }
+
+        result
+    }
+
     // KDFa implementation as specified in TPM 2.0 Part 1
     pub fn kdfa(
         provider: &CryptoProvider,
@@ -315,8 +353,7 @@ impl Crypto {
         }
 
         // Truncate to exact size needed
-        result.truncate(bytes_needed);
-        Ok(result)
+        Ok(Self::truncate_kdf_stream(&result, bits))
     }
 
     /// KDFe, the derivation TPM 2.0 Part 1 section 11.4.10.3 defines for ECDH secret sharing.
@@ -390,8 +427,7 @@ impl Crypto {
             })?;
         }
 
-        result.truncate(bytes_needed);
-        Ok(result)
+        Ok(Self::truncate_kdf_stream(&result, bits))
     }
 
     // AES CFB encryption/decryption
@@ -703,6 +739,66 @@ mod tests {
                 200
             )?,
             one_block[..25]
+        );
+
+        Ok(())
+    }
+
+    /// A request that is not a whole number of octets, which the TPM never makes but a caller can.
+    ///
+    /// The bits kept are the leftmost ones and they come back right aligned, so the answer is the
+    /// stream shifted right, not the stream with its tail chopped off. TSS.NET and TSS.CPP both
+    /// shift, and disagreeing with them would put this library on the wrong side of an interop
+    /// boundary the moment anyone drove a KDF from one of the other stacks.
+    #[test]
+    fn kdf_right_aligns_a_request_that_is_not_a_whole_number_of_octets() -> Result<(), TpmError> {
+        let z = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+            0xcc, 0xdd, 0xee, 0xff,
+        ];
+        let party_u = [0xaau8; 32];
+        let party_v = [0xbbu8; 32];
+
+        // The same inputs as the vector above, so the stream being reduced is already pinned to an
+        // independently computed digest. 250 bits still occupy 32 octets, holding that digest
+        // shifted right by the 6 bits that were not asked for.
+        let shifted =
+            hex_to_bytes("00c9c85cc8106666c337a56f1bc1c0816620edb77dee9d8d7ff0f8f027d24533");
+        let derived = Crypto::kdfe(
+            &SOFTWARE_PROVIDER,
+            TPM_ALG_ID::SHA256,
+            &z,
+            "IDENTITY",
+            &party_u,
+            &party_v,
+            250,
+        )?;
+
+        assert_eq!(derived, shifted);
+        assert_eq!(
+            derived[0] >> 2,
+            0,
+            "the 6 octet bits that were not requested should be zero"
+        );
+
+        // KDFa reduces its stream the same way. Its own answer has to be pinned separately rather
+        // than compared against a 256 bit call, because KDFa hashes the requested length into
+        // every iteration, so asking for 250 bits changes the stream instead of just shortening it.
+        let kdfa_shifted =
+            hex_to_bytes("020f0ff8ba4b653c0586d60a3a3e7c772a74a26b11f8d9304124f2b5dee29068");
+        let kdfa_derived = Crypto::kdfa(
+            &SOFTWARE_PROVIDER,
+            TPM_ALG_ID::SHA256,
+            b"key",
+            "ATH",
+            &[],
+            &[],
+            250,
+        )?;
+        assert_eq!(
+            kdfa_derived, kdfa_shifted,
+            "KDFa should shift its stream rather than truncate it"
         );
 
         Ok(())

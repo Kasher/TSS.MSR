@@ -24,6 +24,8 @@ use crate::{
     error::TpmError,
     tpm_types::{TPM_ALG_ID, TPM_ECC_CURVE},
 };
+use std::fmt;
+use zeroize::Zeroizing;
 
 /// Signature of [`CryptoProvider::hash`].
 pub type HashFn = fn(alg: TPM_ALG_ID, data: &[u8]) -> Result<Vec<u8>, TpmError>;
@@ -72,20 +74,40 @@ pub type RsaPkcs1v15SignFn =
 /// place of a ciphertext, which is why it is returned alongside the agreed value rather than being
 /// discarded with the private half.
 ///
-/// Every field is big endian and zero padded on the left to the curve's coordinate width, so that
-/// a value with leading zero bytes still occupies its full width. The padding is not cosmetic: all
-/// three fields are hashed by [`Crypto::kdfe`](super::Crypto::kdfe), so a short encoding derives a
-/// different key from the one the peer will derive.
-#[derive(Clone, Debug)]
+/// Every field is big endian and zero padded on the left to the curve's coordinate width, and that
+/// padding is load bearing in both cases, for different reasons.
+/// [`Crypto::kdfe`](super::Crypto::kdfe) hashes `z` and `ephemeral_x`, so a short encoding of
+/// either derives a different key from the one the peer derives. `ephemeral_y` is never hashed and
+/// reaches the peer only inside the marshalled point, but it is padded alongside `ephemeral_x`
+/// because a TPM is entitled to be handed a coordinate at its curve's width.
+#[derive(Clone)]
 pub struct EccEphemeralAgreement {
     /// The agreed value, which is the X coordinate of the agreed point.
-    pub z: Vec<u8>,
+    ///
+    /// This is keying material rather than a public value: it is the sole input that distinguishes
+    /// the derived seed from something an eavesdropper could compute. It is therefore wiped when
+    /// dropped, and withheld from the [`Debug`] rendering below.
+    pub z: Zeroizing<Vec<u8>>,
 
     /// The ephemeral public point's X coordinate.
     pub ephemeral_x: Vec<u8>,
 
     /// The ephemeral public point's Y coordinate.
     pub ephemeral_y: Vec<u8>,
+}
+
+/// Renders the public coordinates in full and the agreed value not at all.
+///
+/// The agreed value is as sensitive as the seed derived from it, and a derived `Debug` would put
+/// it into any log line that formats a provider result.
+impl fmt::Debug for EccEphemeralAgreement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EccEphemeralAgreement")
+            .field("z", &format_args!("<{} bytes withheld>", self.z.len()))
+            .field("ephemeral_x", &self.ephemeral_x)
+            .field("ephemeral_y", &self.ephemeral_y)
+            .finish()
+    }
 }
 
 /// Signature of [`EccOps::ephemeral_agree`].

@@ -256,9 +256,9 @@ impl TPMT_PUBLIC {
                 let curve = params.curveID;
                 let agreement = Crypto::ecc_ephemeral_agree(crypto, curve, &point.x, &point.y)?;
 
-                // KDFe hashes both coordinates, so a coordinate the TPM marshalled without its
-                // leading zeroes has to be restored to full width or the two sides hash different
-                // inputs and derive different seeds.
+                // KDFe hashes this coordinate, so one the TPM marshalled without its leading zeroes
+                // has to be restored to full width or the two sides hash different inputs and
+                // derive different seeds.
                 let width = Crypto::ecc_coordinate_size(curve)?;
                 let party_v_info = Crypto::pad_ecc_coordinate(&point.x, width)?;
 
@@ -696,6 +696,22 @@ mod tests {
         AffinePoint<C>: FromEncodedPoint<C> + ToEncodedPoint<C>,
     {
         let private_key = SecretKey::<C>::random(&mut OsRng);
+        let public_area = ecc_public_area(&private_key, curve, name_alg)?;
+
+        Ok((private_key, public_area))
+    }
+
+    /// The public area a TPM would report for an ECC key it already holds.
+    fn ecc_public_area<C>(
+        private_key: &SecretKey<C>,
+        curve: TPM_ECC_CURVE,
+        name_alg: TPM_ALG_ID,
+    ) -> Result<TPMT_PUBLIC, TpmError>
+    where
+        C: CurveArithmetic,
+        FieldBytesSize<C>: ModulusSize,
+        AffinePoint<C>: FromEncodedPoint<C> + ToEncodedPoint<C>,
+    {
         let point = private_key.public_key().to_encoded_point(false);
         let missing =
             || TpmError::GenericError("The generated point has no coordinates".to_string());
@@ -707,7 +723,7 @@ mod tests {
             &Some(TPMU_KDF_SCHEME::null(TPMS_NULL_KDF_SCHEME::default())),
         );
 
-        let public_area = TPMT_PUBLIC {
+        Ok(TPMT_PUBLIC {
             nameAlg: name_alg,
             parameters: Some(TPMU_PUBLIC_PARMS::eccDetail(parameters)),
             unique: Some(TPMU_PUBLIC_ID::ecc(TPMS_ECC_POINT::new(
@@ -715,7 +731,46 @@ mod tests {
                 &point.y().ok_or_else(missing)?.to_vec(),
             ))),
             ..Default::default()
+        })
+    }
+
+    /// A P-256 endorsement key whose public X coordinate is encoded short.
+    ///
+    /// A TPM is free to drop the leading zero octets of a coordinate it marshals into a `TPM2B`,
+    /// and restoring them is what [`Crypto::pad_ecc_coordinate`] exists for. A point built from a
+    /// SEC1 encoding always carries its coordinates at full width, so no generated fixture
+    /// exercises the restoration.
+    ///
+    /// The scalar is fixed rather than searched for. Only one key in 256 has a leading zero octet,
+    /// and generating that many keys costs more in an unoptimised test build than the rest of this
+    /// suite put together.
+    fn ecc_endorsement_key_with_a_short_x(
+        name_alg: TPM_ALG_ID,
+    ) -> Result<(SecretKey<p256::NistP256>, TPMT_PUBLIC), TpmError> {
+        // Public X is 001de71052742cda097122e99b7d6e10e60ed5452c8a6de03f0ca1455b7ba892.
+        const SCALAR: [u8; 32] = [
+            0xad, 0x56, 0xea, 0xd1, 0xd6, 0x29, 0x0c, 0xf6, 0x9f, 0x18, 0x71, 0x82, 0xd2, 0x70,
+            0xd6, 0x2f, 0xd4, 0x09, 0x2b, 0xa1, 0xda, 0x80, 0x5a, 0x64, 0x13, 0xcf, 0xfe, 0x42,
+            0x8f, 0xa7, 0x34, 0xbf,
+        ];
+
+        let private_key = SecretKey::<p256::NistP256>::from_slice(&SCALAR)
+            .map_err(|e| TpmError::GenericError(format!("The fixture scalar is invalid: {e}")))?;
+        let mut public_area = ecc_public_area(&private_key, TPM_ECC_CURVE::NIST_P256, name_alg)?;
+
+        let Some(TPMU_PUBLIC_ID::ecc(point)) = &mut public_area.unique else {
+            return Err(TpmError::GenericError(
+                "The fixture is not an ECC key".to_string(),
+            ));
         };
+
+        // Drop the leading zeroes, the way a TPM marshalling a TPM2B is entitled to.
+        let leading_zeroes = point
+            .x
+            .iter()
+            .position(|octet| *octet != 0)
+            .unwrap_or(point.x.len());
+        point.x.drain(..leading_zeroes);
 
         Ok((private_key, public_area))
     }
@@ -826,6 +881,61 @@ mod tests {
             ecc_round_trip::<p521::NistP521>(TPM_ECC_CURVE::NIST_P521, name_alg)?;
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn ecc_activation_restores_a_coordinate_the_tpm_marshalled_short() -> Result<(), TpmError> {
+        let name_alg = TPM_ALG_ID::SHA256;
+        let (private_key, public_area) = ecc_endorsement_key_with_a_short_x(name_alg)?;
+
+        let Some(TPMU_PUBLIC_ID::ecc(point)) = &public_area.unique else {
+            return Err(TpmError::GenericError(
+                "The fixture is not an ECC key".to_string(),
+            ));
+        };
+        assert!(
+            point.x.len() < 32,
+            "the fixture is only meaningful if its X coordinate is short, got {} octets",
+            point.x.len()
+        );
+
+        let activated_name = activated_name(name_alg);
+        let credential = b"credential to activate".to_vec();
+
+        let activation =
+            public_area.create_activation(&SOFTWARE_PROVIDER, &credential, &activated_name)?;
+        let seed = ecc_recover_seed::<p256::NistP256>(&private_key, name_alg, &activation.secret)?;
+        let recovered = activate_credential(&seed, name_alg, &activated_name, &activation)?;
+
+        // KDFe hashes this coordinate, and the key's owner hashes it at its curve's full width.
+        // Hashing it as it arrived would derive a different seed on each side, and the credential
+        // would not come back.
+        assert_eq!(recovered, credential);
+        Ok(())
+    }
+
+    #[test]
+    fn ecc_activation_rejects_a_coordinate_wider_than_its_curve() -> Result<(), TpmError> {
+        let (_, mut public_area) =
+            ecc_endorsement_key::<p256::NistP256>(TPM_ECC_CURVE::NIST_P256, TPM_ALG_ID::SHA256)?;
+
+        if let Some(TPMU_PUBLIC_ID::ecc(point)) = &mut public_area.unique {
+            point.x.insert(0, 0);
+        }
+
+        // A 33 octet X does not belong to P-256. Quietly trimming it to fit would agree with a
+        // point the key's owner never held, and the failure would only appear at the TPM.
+        assert!(
+            public_area
+                .create_activation(
+                    &SOFTWARE_PROVIDER,
+                    b"credential",
+                    &activated_name(TPM_ALG_ID::SHA256)
+                )
+                .is_err(),
+            "an oversized coordinate should be rejected"
+        );
         Ok(())
     }
 

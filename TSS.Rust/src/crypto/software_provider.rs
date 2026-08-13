@@ -25,6 +25,7 @@ use rsa::{BigUint, Oaep, Pkcs1v15Sign, RsaPrivateKey, RsaPublicKey};
 use sha1::Sha1;
 use sha2::{Digest as Sha2Digest, Sha256, Sha384, Sha512};
 use sm3::Sm3;
+use zeroize::Zeroizing;
 
 /// The RustCrypto-backed provider.
 pub static SOFTWARE_PROVIDER: CryptoProvider = CryptoProvider {
@@ -389,7 +390,7 @@ where
     let ephemeral_y = ephemeral_point.y().ok_or_else(missing)?.to_vec();
 
     // The shared secret is the agreed point's X coordinate, already at the curve's full width.
-    let z = ephemeral.diffie_hellman(&peer).raw_secret_bytes().to_vec();
+    let z = Zeroizing::new(ephemeral.diffie_hellman(&peer).raw_secret_bytes().to_vec());
 
     Ok(EccEphemeralAgreement {
         z,
