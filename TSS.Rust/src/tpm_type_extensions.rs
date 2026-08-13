@@ -1,35 +1,11 @@
-use crate::crypto::Crypto;
+use crate::crypto::{Crypto, RsaKeyParts, RSA_DEFAULT_EXPONENT};
 use crate::error::TpmError;
 use crate::tpm2_helpers::int_to_tpm;
 use crate::tpm_buffer::*;
 use crate::tpm_structure::TpmEnum;
 use crate::tpm_types::CertifyResponse;
 use crate::tpm_types::*;
-use rsa::{BigUint, RsaPublicKey, RsaPrivateKey, Oaep};
-use rsa::traits::{PublicKeyParts, PrivateKeyParts};
-use rand::rngs::OsRng;
 use zeroize::Zeroize;
-
-/// RSA-OAEP encrypt using the hash algorithm matching the key's nameAlg.
-fn rsa_oaep_encrypt(
-    rsa_key: &RsaPublicKey,
-    name_alg: TPM_ALG_ID,
-    label: &str,
-    data: &[u8],
-) -> Result<Vec<u8>, TpmError> {
-    match name_alg {
-        TPM_ALG_ID::SHA1 => rsa_key
-            .encrypt(&mut OsRng, Oaep::new_with_label::<sha1::Sha1, _>(label), data)
-            .map_err(|e| TpmError::GenericError(format!("RSA-OAEP encryption failed: {e}"))),
-        TPM_ALG_ID::SHA256 => rsa_key
-            .encrypt(&mut OsRng, Oaep::new_with_label::<sha2::Sha256, _>(label), data)
-            .map_err(|e| TpmError::GenericError(format!("RSA-OAEP encryption failed: {e}"))),
-        _ => Err(TpmError::NotSupported(format!(
-            "Unsupported nameAlg for OAEP: {:?}",
-            name_alg
-        ))),
-    }
-}
 
 /// Activation data returned from create_activation
 #[derive(Debug)]
@@ -152,13 +128,14 @@ impl TPMT_PUBLIC {
             return Err(TpmError::NotSupported("Invalid RSA public key".to_string()));
         };
 
-        let rsa_public_key = RsaPublicKey::new(
-            BigUint::from_bytes_be(rsa_pub_n),
-            BigUint::from_bytes_be(&[1, 0, 1]) // e = 65537
-        ).map_err(|_| TpmError::GenericError("Invalid RSA parameters".to_string()))?;
-
         // Encrypt seed with label "IDENTITY" using OAEP with the key's nameAlg
-        let secret = rsa_oaep_encrypt(&rsa_public_key, self.nameAlg, "IDENTITY\0", &seed)?;
+        let secret = Crypto::rsa_oaep_encrypt(
+            rsa_pub_n,
+            &RSA_DEFAULT_EXPONENT,
+            self.nameAlg,
+            b"IDENTITY\0",
+            &seed,
+        )?;
 
         // Make the credential blob:
 
@@ -244,16 +221,14 @@ impl TPMT_PUBLIC {
             return Err(TpmError::NotSupported("Invalid RSA public key".to_string()));
         };
 
-        // Create RSA public key (usually e = 65537)
-        let rsa_public_key = RsaPublicKey::new(
-            BigUint::from_bytes_be(rsa_pub_n),
-            BigUint::from_bytes_be(&[1, 0, 1]) // e = 65537
-        ).map_err(|_| TpmError::InvalidArraySize("Invalid RSA parameters".to_string()))?;
-
         // Encrypt the data using OAEP padding with the key's nameAlg
-        let encrypted_data = rsa_oaep_encrypt(&rsa_public_key, self.nameAlg, "IDENTITY\0", data)?;
-
-        Ok(encrypted_data)
+        Crypto::rsa_oaep_encrypt(
+            rsa_pub_n,
+            &RSA_DEFAULT_EXPONENT,
+            self.nameAlg,
+            b"IDENTITY\0",
+            data,
+        )
     }
 
     /// Encrypt a session salt for use with salted auth sessions.
@@ -265,20 +240,13 @@ impl TPMT_PUBLIC {
             return Err(TpmError::NotSupported("Only RSA keys can encrypt session salt".to_string()));
         };
 
-        let rsa_public_key = RsaPublicKey::new(
-            BigUint::from_bytes_be(rsa_pub_n),
-            BigUint::from_bytes_be(&[1, 0, 1]),
-        ).map_err(|_| TpmError::InvalidArraySize("Invalid RSA parameters".to_string()))?;
-
-        let padding = match self.nameAlg {
-            TPM_ALG_ID::SHA1 => Oaep::new_with_label::<sha1::Sha1, _>("SECRET\0"),
-            TPM_ALG_ID::SHA256 => Oaep::new_with_label::<sha2::Sha256, _>("SECRET\0"),
-            _ => return Err(TpmError::NotSupported(format!("Unsupported nameAlg for session salt: {:?}", self.nameAlg))),
-        };
-
-        rsa_public_key
-            .encrypt(&mut OsRng, padding, salt)
-            .map_err(|e| TpmError::GenericError(format!("Failed to encrypt session salt: {}", e)))
+        Crypto::rsa_oaep_encrypt(
+            rsa_pub_n,
+            &RSA_DEFAULT_EXPONENT,
+            self.nameAlg,
+            b"SECRET\0",
+            salt,
+        )
     }
 }
 
@@ -411,23 +379,19 @@ impl TSS_KEY {
     /// Generate an RSA key pair in software.
     /// Populates publicPart.unique with the modulus and privatePart with the first prime (p).
     pub fn create_key(&mut self) -> Result<(), TpmError> {
-        let rsa_params = if let Some(TPMU_PUBLIC_PARMS::rsaDetail(ref params)) = self.publicPart.parameters {
-            params.clone()
+        let key_bits = if let Some(TPMU_PUBLIC_PARMS::rsaDetail(ref params)) = self.publicPart.parameters {
+            params.keyBits as usize
         } else {
             return Err(TpmError::GenericError("Only RSA key creation is supported".to_string()));
         };
 
-        let key_bits = rsa_params.keyBits as usize;
-        let priv_key = RsaPrivateKey::new(&mut OsRng, key_bits)
-            .map_err(|e| TpmError::GenericError(format!("RSA key generation failed: {}", e)))?;
+        let key = Crypto::rsa_generate_keypair(key_bits)?;
 
         // Store modulus (n) in publicPart.unique
-        let n_bytes = priv_key.n().to_bytes_be();
-        self.publicPart.unique = Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA { buffer: n_bytes }));
+        self.publicPart.unique = Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA { buffer: key.modulus }));
 
         // Store first prime (p) as privatePart
-        let primes = priv_key.primes();
-        self.privatePart = primes[0].to_bytes_be();
+        self.privatePart = key.prime;
 
         Ok(())
     }
@@ -447,16 +411,12 @@ impl TSS_KEY {
         };
 
         // Reconstruct RSA private key from modulus + prime p
-        let n = BigUint::from_bytes_be(&n_bytes);
-        let p = BigUint::from_bytes_be(&self.privatePart);
-        let q = &n / &p;
-        let e = BigUint::from(65537u32);
+        let key = RsaKeyParts {
+            modulus: n_bytes,
+            prime: self.privatePart.clone(),
+        };
 
-        let priv_key = RsaPrivateKey::from_p_q(p, q, e)
-            .map_err(|e| TpmError::GenericError(format!("Failed to reconstruct RSA key: {}", e)))?;
-
-        let sig_bytes = priv_key.sign(Crypto::pkcs1v15_sign_scheme(hash_alg)?, digest)
-            .map_err(|e| TpmError::GenericError(format!("RSA signing failed: {}", e)))?;
+        let sig_bytes = Crypto::rsa_pkcs1v15_sign(&key, hash_alg, digest)?;
 
         Ok(TPMT_SIGNATURE {
             signature: Some(TPMU_SIGNATURE::rsassa(TPMS_SIGNATURE_RSASSA {
