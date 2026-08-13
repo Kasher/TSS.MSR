@@ -6,6 +6,11 @@
 //! [`Crypto`] sits on top and adds the logic that the TPM 2.0 specification defines in terms of
 //! those primitives — digest sizes, KDFa, signature validation — which is the same regardless of
 //! which backend is in use.
+//!
+//! There is no ambient default backend. Every operation that needs one takes a
+//! [`CryptoProvider`](provider::CryptoProvider) from its caller, so which backend runs is always
+//! visible at the call site. [`Tpm2`](crate::tpm2_impl::Tpm2) holds the provider it was built with
+//! and supplies it to the command dispatch path on the caller's behalf.
 
 pub mod provider;
 #[cfg(feature = "software-crypto")]
@@ -29,28 +34,9 @@ pub struct RsaKeyParts {
     pub prime: Vec<u8>,
 }
 
-/// The provider used when no backend is compiled in. Every primitive reports `NotSupported`.
-#[cfg(not(feature = "software-crypto"))]
-static UNIMPLEMENTED_PROVIDER: CryptoProvider = CryptoProvider::new_unimplemented();
-
 pub struct Crypto;
 
 impl Crypto {
-    /// The backend every primitive is currently routed through.
-    ///
-    /// Callers will pass a [`CryptoProvider`] explicitly in a later change; until then the
-    /// backend is selected here so that this refactoring does not alter behaviour.
-    fn provider() -> &'static CryptoProvider {
-        #[cfg(feature = "software-crypto")]
-        {
-            &software_provider::SOFTWARE_PROVIDER
-        }
-        #[cfg(not(feature = "software-crypto"))]
-        {
-            &UNIMPLEMENTED_PROVIDER
-        }
-    }
-
     /// The length in bytes of a digest produced by `alg`, or zero if `alg` is not a hash.
     ///
     /// This is fixed by the TPM 2.0 specification, so it does not depend on the backend.
@@ -68,12 +54,21 @@ impl Crypto {
     }
 
     // Hash a byte buffer using the specified algorithm
-    pub fn hash(alg: TPM_ALG_ID, data: &[u8]) -> Result<Vec<u8>, TpmError> {
-        (Self::provider().hash)(alg, data)
+    pub fn hash(
+        provider: &CryptoProvider,
+        alg: TPM_ALG_ID,
+        data: &[u8],
+    ) -> Result<Vec<u8>, TpmError> {
+        (provider.hash)(alg, data)
     }
 
-    pub fn hmac(hash_alg: TPM_ALG_ID, key: &[u8], to_hash: &[u8]) -> Result<Vec<u8>, TpmError> {
-        (Self::provider().hmac)(hash_alg, key, to_hash)
+    pub fn hmac(
+        provider: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        key: &[u8],
+        to_hash: &[u8],
+    ) -> Result<Vec<u8>, TpmError> {
+        (provider.hmac)(hash_alg, key, to_hash)
     }
 
     /// RSA-OAEP encrypt `data` under the public key given by its big-endian components.
@@ -81,41 +76,48 @@ impl Crypto {
     /// `label` is used verbatim, so callers must include the trailing NUL that the TPM
     /// specification puts in labels such as `b"IDENTITY\0"`.
     pub fn rsa_oaep_encrypt(
+        provider: &CryptoProvider,
         modulus: &[u8],
         exponent: &[u8],
         hash_alg: TPM_ALG_ID,
         label: &[u8],
         data: &[u8],
     ) -> Result<Vec<u8>, TpmError> {
-        (Self::provider().rsa.oaep_encrypt)(modulus, exponent, hash_alg, label, data)
+        (provider.rsa.oaep_encrypt)(modulus, exponent, hash_alg, label, data)
     }
 
     /// Verify an RSASSA-PKCS1-v1_5 signature over an already computed digest.
     pub fn rsa_pkcs1v15_verify(
+        provider: &CryptoProvider,
         modulus: &[u8],
         exponent: &[u8],
         hash_alg: TPM_ALG_ID,
         digest: &[u8],
         signature: &[u8],
     ) -> Result<bool, TpmError> {
-        (Self::provider().rsa.pkcs1v15_verify)(modulus, exponent, hash_alg, digest, signature)
+        (provider.rsa.pkcs1v15_verify)(modulus, exponent, hash_alg, digest, signature)
     }
 
     /// Generate an RSA key pair, returning the modulus and the first prime.
-    pub fn rsa_generate_keypair(key_bits: usize) -> Result<RsaKeyParts, TpmError> {
-        (Self::provider().rsa.generate_keypair)(key_bits)
+    pub fn rsa_generate_keypair(
+        provider: &CryptoProvider,
+        key_bits: usize,
+    ) -> Result<RsaKeyParts, TpmError> {
+        (provider.rsa.generate_keypair)(key_bits)
     }
 
     /// Sign an already computed digest with RSASSA-PKCS1-v1_5.
     pub fn rsa_pkcs1v15_sign(
+        provider: &CryptoProvider,
         key: &RsaKeyParts,
         hash_alg: TPM_ALG_ID,
         digest: &[u8],
     ) -> Result<Vec<u8>, TpmError> {
-        (Self::provider().rsa.pkcs1v15_sign)(key, hash_alg, digest)
+        (provider.rsa.pkcs1v15_sign)(key, hash_alg, digest)
     }
 
     pub fn validate_signature(
+        provider: &CryptoProvider,
         public_key: &TPMT_PUBLIC,
         signed_blob_hash: Vec<u8>,
         signature: &Option<TPMU_SIGNATURE>,
@@ -153,6 +155,7 @@ impl Crypto {
         }
 
         Self::rsa_pkcs1v15_verify(
+            provider,
             rsa_pub_key,
             &RSA_DEFAULT_EXPONENT,
             signature.hash,
@@ -163,6 +166,7 @@ impl Crypto {
 
     // KDFa implementation as specified in TPM 2.0 Part 1
     pub fn kdfa(
+        provider: &CryptoProvider,
         hash_alg: TPM_ALG_ID,
         key: &[u8],
         label: &str,
@@ -196,7 +200,7 @@ impl Crypto {
             to_hash.extend_from_slice(&(bits as u32).to_be_bytes());
 
             // Perform HMAC
-            let hmac_result = Self::hmac(hash_alg, key, &to_hash)?;
+            let hmac_result = Self::hmac(provider, hash_alg, key, &to_hash)?;
             result.extend_from_slice(&hmac_result);
 
             counter = counter.checked_add(1).ok_or_else(|| {
@@ -211,18 +215,19 @@ impl Crypto {
 
     // AES CFB encryption/decryption
     pub fn cfb_xcrypt(
+        provider: &CryptoProvider,
         encrypt: bool,
         key: &[u8],
         iv: &[u8],
         data: &[u8],
     ) -> Result<Vec<u8>, TpmError> {
-        (Self::provider().aes_cfb)(encrypt, key, iv, data)
+        (provider.aes_cfb)(encrypt, key, iv, data)
     }
 
     /// Return `num_bytes` of cryptographically secure random data.
-    pub fn get_random(num_bytes: usize) -> Result<Vec<u8>, TpmError> {
+    pub fn get_random(provider: &CryptoProvider, num_bytes: usize) -> Result<Vec<u8>, TpmError> {
         let mut result = vec![0u8; num_bytes];
-        (Self::provider().random)(&mut result)?;
+        (provider.random)(&mut result)?;
         Ok(result)
     }
 }
@@ -236,6 +241,7 @@ mod tests {
     use rsa::traits::PublicKeyParts;
     use rsa::{Oaep, Pkcs1v15Sign, RsaPrivateKey};
     use sha2::{Digest as Sha2Digest, Sha256};
+    use software_provider::SOFTWARE_PROVIDER;
 
     #[test]
     fn validate_signature_uses_signature_hash_algorithm() -> Result<(), TpmError> {
@@ -260,7 +266,12 @@ mod tests {
             sig,
         }));
 
-        assert!(Crypto::validate_signature(&public_key, digest, &signature)?);
+        assert!(Crypto::validate_signature(
+            &SOFTWARE_PROVIDER,
+            &public_key,
+            digest,
+            &signature
+        )?);
         Ok(())
     }
 
@@ -273,6 +284,7 @@ mod tests {
 
         let plaintext = b"seed material";
         let ciphertext = Crypto::rsa_oaep_encrypt(
+            &SOFTWARE_PROVIDER,
             &modulus,
             &RSA_DEFAULT_EXPONENT,
             TPM_ALG_ID::SHA256,
@@ -296,12 +308,14 @@ mod tests {
 
     #[test]
     fn rsa_sign_round_trips_through_verify() -> Result<(), TpmError> {
-        let key = Crypto::rsa_generate_keypair(2048)?;
+        let key = Crypto::rsa_generate_keypair(&SOFTWARE_PROVIDER, 2048)?;
         let digest = Sha256::digest(b"software key signing regression").to_vec();
 
-        let signature = Crypto::rsa_pkcs1v15_sign(&key, TPM_ALG_ID::SHA256, &digest)?;
+        let signature =
+            Crypto::rsa_pkcs1v15_sign(&SOFTWARE_PROVIDER, &key, TPM_ALG_ID::SHA256, &digest)?;
 
         assert!(Crypto::rsa_pkcs1v15_verify(
+            &SOFTWARE_PROVIDER,
             &key.modulus,
             &RSA_DEFAULT_EXPONENT,
             TPM_ALG_ID::SHA256,
@@ -318,6 +332,12 @@ mod tests {
             prime: vec![0u8; 128],
         };
 
-        assert!(Crypto::rsa_pkcs1v15_sign(&key, TPM_ALG_ID::SHA256, &[0u8; 32]).is_err());
+        assert!(Crypto::rsa_pkcs1v15_sign(
+            &SOFTWARE_PROVIDER,
+            &key,
+            TPM_ALG_ID::SHA256,
+            &[0u8; 32]
+        )
+        .is_err());
     }
 }

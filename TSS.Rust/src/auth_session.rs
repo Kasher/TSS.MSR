@@ -1,4 +1,4 @@
-use crate::crypto::Crypto;
+use crate::crypto::{provider::CryptoProvider, Crypto};
 use crate::error::TpmError;
 use crate::{tpm_structure::TpmEnum, tpm_types::*};
 
@@ -75,6 +75,7 @@ impl Session {
     // struct would just move the same values behind another type.
     #[allow(clippy::too_many_arguments)]
     pub fn from_tpm_response(
+        crypto: &CryptoProvider,
         session_handle: TPM_HANDLE,
         session_type: TPM_SE,
         hash_alg: TPM_ALG_ID,
@@ -106,13 +107,18 @@ impl Session {
             bind_handle: bind_object.handle,
         };
 
-        sess.calc_session_key(salt, bind_object)?;
+        sess.calc_session_key(crypto, salt, bind_object)?;
         Ok(sess)
     }
 
     /// Derive the session key using KDFa with label "ATH".
     /// SessionKey = KDFa(hashAlg, bindAuth || salt, "ATH", nonceTPM, nonceCaller, hashBits)
-    fn calc_session_key(&mut self, salt: &[u8], bind_object: &TPM_HANDLE) -> Result<(), TpmError> {
+    fn calc_session_key(
+        &mut self,
+        crypto: &CryptoProvider,
+        salt: &[u8],
+        bind_object: &TPM_HANDLE,
+    ) -> Result<(), TpmError> {
         let null_handle = TPM_HANDLE::new(TPM_RH::NULL.get_value());
         let has_salt = !salt.is_empty();
         let is_bound = bind_object.handle != null_handle.handle;
@@ -132,6 +138,7 @@ impl Session {
 
         let hash_bits = Crypto::digestSize(self.hash_alg) * 8;
         self.session_key = Crypto::kdfa(
+            crypto,
             self.hash_alg,
             &hmac_key,
             "ATH",
@@ -165,6 +172,7 @@ impl Session {
     /// hmac = HMAC(hashAlg, hmacKey, parmHash || nonceNewer || nonceOlder || nonceDec || nonceEnc || sessionAttrs)
     pub fn get_auth_hmac(
         &self,
+        crypto: &CryptoProvider,
         cp_hash: Vec<u8>,
         is_command: bool,
         nonce_tpm_dec: &[u8],
@@ -225,13 +233,18 @@ impl Session {
         buf_to_hmac.extend_from_slice(nonce_tpm_enc);
         buf_to_hmac.extend_from_slice(&session_attrs);
 
-        Crypto::hmac(self.hash_alg, &hmac_key, &buf_to_hmac)
+        Crypto::hmac(crypto, self.hash_alg, &hmac_key, &buf_to_hmac)
     }
 
     /// Process parameter encryption/decryption using AES-CFB.
     /// Key derivation: KDFa(hashAlg, sessionKey, "CFB", nonceNewer, nonceOlder, 256)
     /// First keyBits/8 bytes = AES key, next 16 bytes = IV
-    pub fn param_xcrypt(&self, data: &[u8], is_command: bool) -> Result<Vec<u8>, TpmError> {
+    pub fn param_xcrypt(
+        &self,
+        crypto: &CryptoProvider,
+        data: &[u8],
+        is_command: bool,
+    ) -> Result<Vec<u8>, TpmError> {
         if data.is_empty() {
             return Ok(Vec::new());
         }
@@ -264,6 +277,7 @@ impl Session {
         // Produces key_size + 16 bytes (key + IV)
         let num_bits = (key_size + 16) * 8;
         let key_info = Crypto::kdfa(
+            crypto,
             self.hash_alg,
             &self.session_key,
             "CFB",
@@ -277,7 +291,7 @@ impl Session {
 
         // For requests: encrypt (TPM will decrypt)
         // For responses: decrypt (TPM encrypted it)
-        Crypto::cfb_xcrypt(is_command, aes_key, iv, data)
+        Crypto::cfb_xcrypt(crypto, is_command, aes_key, iv, data)
     }
 }
 

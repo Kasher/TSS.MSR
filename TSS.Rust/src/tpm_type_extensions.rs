@@ -1,4 +1,4 @@
-use crate::crypto::{Crypto, RsaKeyParts, RSA_DEFAULT_EXPONENT};
+use crate::crypto::{provider::CryptoProvider, Crypto, RsaKeyParts, RSA_DEFAULT_EXPONENT};
 use crate::error::TpmError;
 use crate::tpm2_helpers::int_to_tpm;
 use crate::tpm_buffer::*;
@@ -15,11 +15,11 @@ pub struct ActivationData {
 }
 
 impl TPMT_PUBLIC {
-    pub fn get_name(&self) -> Result<Vec<u8>, TpmError> {
+    pub fn get_name(&self, crypto: &CryptoProvider) -> Result<Vec<u8>, TpmError> {
         let mut buffer = TpmBuffer::new(None);
         self.toTpm(&mut buffer)?;
 
-        let mut pub_hash = Crypto::hash(self.nameAlg, buffer.trim())?;
+        let mut pub_hash = Crypto::hash(crypto, self.nameAlg, buffer.trim())?;
         let hash_alg = int_to_tpm(self.nameAlg.get_value());
 
         pub_hash.splice(0..0, hash_alg.iter().cloned());
@@ -49,6 +49,7 @@ impl TPMT_PUBLIC {
 
     pub fn validate_certify(
         &self,
+        crypto: &CryptoProvider,
         certified_key: &TPMT_PUBLIC,
         nonce: &[u8],
         certify_response: &CertifyResponse,
@@ -57,7 +58,12 @@ impl TPMT_PUBLIC {
         let signature_hash_alg = if let Some(TPMU_SIGNATURE::rsassa(signature)) = &certify_response.signature {
             signature.hash
         } else {
-            return Crypto::validate_signature(self, Vec::new(), &certify_response.signature);
+            return Crypto::validate_signature(
+                crypto,
+                self,
+                Vec::new(),
+                &certify_response.signature,
+            );
         };
         if key_hash_alg != signature_hash_alg {
             return Ok(false);
@@ -74,7 +80,7 @@ impl TPMT_PUBLIC {
         }
 
         if let Some(TPMU_ATTEST::certify(quote_info)) = &attest.attested {
-            if (quote_info.name != certified_key.get_name()?) {
+            if (quote_info.name != certified_key.get_name(crypto)?) {
                 return Ok(false);
             }
         } else {
@@ -88,9 +94,9 @@ impl TPMT_PUBLIC {
             buffer.trim().to_vec()
         };
 
-        let signed_blob_hash = Crypto::hash(signature_hash_alg, &signed_blob)?;
+        let signed_blob_hash = Crypto::hash(crypto, signature_hash_alg, &signed_blob)?;
 
-        Crypto::validate_signature(self, signed_blob_hash, &certify_response.signature)
+        Crypto::validate_signature(crypto, self, signed_blob_hash, &certify_response.signature)
     }
 
     /// Implements the TPM2_MakeCredential command functionality:
@@ -100,6 +106,7 @@ impl TPMT_PUBLIC {
     /// 4. Encrypt credential + create integrity HMAC
     pub fn create_activation(
         &self,
+        crypto: &CryptoProvider,
         credential: &[u8],
         activated_name: &[u8],
     ) -> Result<ActivationData, TpmError> {
@@ -120,7 +127,7 @@ impl TPMT_PUBLIC {
 
         // The seed is the same size as the nameAlg digest, per TPM 2.0 Part 1 "Credential
         // Protection". TSS.NET does the same in TpmKey.CreateActivationCredentials.
-        let mut seed = Crypto::get_random(Crypto::digestSize(self.nameAlg))?;
+        let mut seed = Crypto::get_random(crypto, Crypto::digestSize(self.nameAlg))?;
 
         // Get RSA public key components for encrypting the seed
         let rsa_pub_n = if let Some(TPMU_PUBLIC_ID::rsa(unique)) = &self.unique {
@@ -131,6 +138,7 @@ impl TPMT_PUBLIC {
 
         // Encrypt seed with label "IDENTITY" using OAEP with the key's nameAlg
         let secret = Crypto::rsa_oaep_encrypt(
+            crypto,
             rsa_pub_n,
             &RSA_DEFAULT_EXPONENT,
             self.nameAlg,
@@ -142,6 +150,7 @@ impl TPMT_PUBLIC {
 
         // 1. Create the symmetric key via KDFa
         let mut sym_key = Crypto::kdfa(
+            crypto,
             self.nameAlg,
             &seed,
             "STORAGE",
@@ -157,6 +166,7 @@ impl TPMT_PUBLIC {
 
         // 3. Encrypt the credential 
         let enc_credential = Crypto::cfb_xcrypt(
+            crypto,
             true,
             &sym_key,
             &[0u8; 16], // Zero IV
@@ -165,6 +175,7 @@ impl TPMT_PUBLIC {
 
         // 4. Generate the integrity HMAC key
         let mut hmac_key = Crypto::kdfa(
+            crypto,
             self.nameAlg,
             &seed,
             "INTEGRITY",
@@ -179,6 +190,7 @@ impl TPMT_PUBLIC {
         to_hmac.extend_from_slice(activated_name);
         
         let integrity_hmac = Crypto::hmac(
+            crypto,
             self.nameAlg,
             &hmac_key,
             &to_hmac
@@ -198,6 +210,7 @@ impl TPMT_PUBLIC {
     // Performs RSA encryption of the given data using the public key
     pub fn encrypt(
         &self,
+        crypto: &CryptoProvider,
         data: &[u8],
     ) -> Result<Vec<u8>, TpmError> {
         // Verify we have an RSA key with correct parameters
@@ -224,6 +237,7 @@ impl TPMT_PUBLIC {
 
         // Encrypt the data using OAEP padding with the key's nameAlg
         Crypto::rsa_oaep_encrypt(
+            crypto,
             rsa_pub_n,
             &RSA_DEFAULT_EXPONENT,
             self.nameAlg,
@@ -234,7 +248,11 @@ impl TPMT_PUBLIC {
 
     /// Encrypt a session salt for use with salted auth sessions.
     /// Uses RSA-OAEP with the nameAlg hash and label "SECRET\0".
-    pub fn encrypt_session_salt(&self, salt: &[u8]) -> Result<Vec<u8>, TpmError> {
+    pub fn encrypt_session_salt(
+        &self,
+        crypto: &CryptoProvider,
+        salt: &[u8],
+    ) -> Result<Vec<u8>, TpmError> {
         let rsa_pub_n = if let Some(TPMU_PUBLIC_ID::rsa(unique)) = &self.unique {
             &unique.buffer
         } else {
@@ -242,6 +260,7 @@ impl TPMT_PUBLIC {
         };
 
         Crypto::rsa_oaep_encrypt(
+            crypto,
             rsa_pub_n,
             &RSA_DEFAULT_EXPONENT,
             self.nameAlg,
@@ -379,14 +398,14 @@ impl std::fmt::Display for TPM_HANDLE {
 impl TSS_KEY {
     /// Generate an RSA key pair in software.
     /// Populates publicPart.unique with the modulus and privatePart with the first prime (p).
-    pub fn create_key(&mut self) -> Result<(), TpmError> {
+    pub fn create_key(&mut self, crypto: &CryptoProvider) -> Result<(), TpmError> {
         let key_bits = if let Some(TPMU_PUBLIC_PARMS::rsaDetail(ref params)) = self.publicPart.parameters {
             params.keyBits as usize
         } else {
             return Err(TpmError::GenericError("Only RSA key creation is supported".to_string()));
         };
 
-        let key = Crypto::rsa_generate_keypair(key_bits)?;
+        let key = Crypto::rsa_generate_keypair(crypto, key_bits)?;
 
         // Store modulus (n) in publicPart.unique
         self.publicPart.unique = Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA { buffer: key.modulus }));
@@ -400,7 +419,12 @@ impl TSS_KEY {
     /// Sign a digest using the software key (RSASSA-PKCS1-v1_5).
     /// `digest` should be the hash of the data to sign.
     /// Returns a TPMT_SIGNATURE with RSASSA scheme.
-    pub fn sign(&self, digest: &[u8], hash_alg: TPM_ALG_ID) -> Result<TPMT_SIGNATURE, TpmError> {
+    pub fn sign(
+        &self,
+        crypto: &CryptoProvider,
+        digest: &[u8],
+        hash_alg: TPM_ALG_ID,
+    ) -> Result<TPMT_SIGNATURE, TpmError> {
         if !matches!(&self.publicPart.parameters, Some(TPMU_PUBLIC_PARMS::rsaDetail(_))) {
             return Err(TpmError::GenericError("Only RSA signing is supported".to_string()));
         }
@@ -417,7 +441,7 @@ impl TSS_KEY {
             prime: self.privatePart.clone(),
         };
 
-        let sig_bytes = Crypto::rsa_pkcs1v15_sign(&key, hash_alg, digest)?;
+        let sig_bytes = Crypto::rsa_pkcs1v15_sign(crypto, &key, hash_alg, digest)?;
 
         Ok(TPMT_SIGNATURE {
             signature: Some(TPMU_SIGNATURE::rsassa(TPMS_SIGNATURE_RSASSA {
@@ -433,6 +457,7 @@ impl TSS_KEY {
 #[cfg(all(test, feature = "software-crypto"))]
 mod tests {
     use super::*;
+    use crate::crypto::software_provider::SOFTWARE_PROVIDER;
     use rand::rngs::OsRng;
     use rsa::traits::PublicKeyParts;
     use rsa::{Oaep, RsaPrivateKey};
@@ -507,8 +532,9 @@ mod tests {
             )));
         }
 
-        let sym_key = Crypto::kdfa(name_alg, &seed, "STORAGE", activated_name, &[], 128)?;
+        let sym_key = Crypto::kdfa(&SOFTWARE_PROVIDER, name_alg, &seed, "STORAGE", activated_name, &[], 128)?;
         let hmac_key = Crypto::kdfa(
+            &SOFTWARE_PROVIDER,
             name_alg,
             &seed,
             "INTEGRITY",
@@ -519,7 +545,8 @@ mod tests {
 
         let mut to_hmac = activation.credential_blob.encIdentity.clone();
         to_hmac.extend_from_slice(activated_name);
-        if Crypto::hmac(name_alg, &hmac_key, &to_hmac)? != activation.credential_blob.integrityHMAC
+        if Crypto::hmac(&SOFTWARE_PROVIDER, name_alg, &hmac_key, &to_hmac)?
+            != activation.credential_blob.integrityHMAC
         {
             return Err(TpmError::GenericError(
                 "Integrity HMAC mismatch".to_string(),
@@ -527,6 +554,7 @@ mod tests {
         }
 
         let plaintext = Crypto::cfb_xcrypt(
+            &SOFTWARE_PROVIDER,
             false,
             &sym_key,
             &[0u8; 16],
@@ -555,7 +583,11 @@ mod tests {
             let activated_name = activated_name(name_alg);
             let credential = b"credential to activate".to_vec();
 
-            let activation = endorsement_public.create_activation(&credential, &activated_name)?;
+            let activation = endorsement_public.create_activation(
+                &SOFTWARE_PROVIDER,
+                &credential,
+                &activated_name,
+            )?;
             let recovered = activate_credential(
                 &endorsement_private,
                 name_alg,
@@ -582,7 +614,11 @@ mod tests {
         endorsement_public.parameters = Some(TPMU_PUBLIC_PARMS::rsaDetail(parameters));
 
         assert!(endorsement_public
-            .create_activation(b"credential", &activated_name(TPM_ALG_ID::SHA256))
+            .create_activation(
+                &SOFTWARE_PROVIDER,
+                b"credential",
+                &activated_name(TPM_ALG_ID::SHA256)
+            )
             .is_err());
 
         Ok(())

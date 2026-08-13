@@ -11,7 +11,7 @@
 //! against a real policy session on the TPM.
 
 use crate::auth_session::Session;
-use crate::crypto::Crypto;
+use crate::crypto::{provider::CryptoProvider, Crypto};
 use crate::error::TpmError;
 use crate::tpm2_impl::Tpm2;
 use crate::tpm_buffer::{TpmBuffer, TpmMarshaller};
@@ -25,7 +25,12 @@ use crate::tpm_types::*;
 /// Trait implemented by all policy assertion types.
 pub trait PolicyAssertion {
     /// Update a policy digest accumulator (used for trial/software digest computation).
-    fn update_policy_digest(&self, hash_alg: TPM_ALG_ID, accumulator: &mut Vec<u8>) -> Result<(), TpmError>;
+    fn update_policy_digest(
+        &self,
+        crypto: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        accumulator: &mut Vec<u8>,
+    ) -> Result<(), TpmError>;
 
     /// Execute this policy assertion against a live TPM policy session.
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError>;
@@ -38,6 +43,7 @@ pub trait PolicyAssertion {
 /// `policyDigest = H(policyDigest || commandCode || arg2)`
 /// Then: `policyDigest = H(policyDigest || arg3)`
 fn policy_update(
+    crypto: &CryptoProvider,
     hash_alg: TPM_ALG_ID,
     accumulator: &mut Vec<u8>,
     command_code: TPM_CC,
@@ -49,14 +55,14 @@ fn policy_update(
     buf.extend_from_slice(accumulator);
     buf.extend_from_slice(&command_code.get_value().to_be_bytes());
     buf.extend_from_slice(arg2);
-    *accumulator = Crypto::hash(hash_alg, &buf)?;
+    *accumulator = Crypto::hash(crypto, hash_alg, &buf)?;
 
     // Second extend (if arg3 is non-empty): H(accumulator || arg3)
     if !arg3.is_empty() {
         let mut buf2 = Vec::new();
         buf2.extend_from_slice(accumulator);
         buf2.extend_from_slice(arg3);
-        *accumulator = Crypto::hash(hash_alg, &buf2)?;
+        *accumulator = Crypto::hash(crypto, hash_alg, &buf2)?;
     }
     Ok(())
 }
@@ -96,8 +102,12 @@ impl PolicyTree {
     }
 
     /// Compute the policy digest in software (equivalent to a trial session).
-    pub fn get_policy_digest(&self, hash_alg: TPM_ALG_ID) -> Result<Vec<u8>, TpmError> {
-        compute_digest(&self.assertions, hash_alg)
+    pub fn get_policy_digest(
+        &self,
+        crypto: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+    ) -> Result<Vec<u8>, TpmError> {
+        compute_digest(crypto, &self.assertions, hash_alg)
     }
 
     /// Execute all assertions in order against a live policy session.
@@ -113,13 +123,14 @@ impl PolicyTree {
 
 /// Compute the digest for a slice of assertions (used by PolicyTree and PolicyOr).
 pub(crate) fn compute_digest(
+    crypto: &CryptoProvider,
     assertions: &[Box<dyn PolicyAssertion>],
     hash_alg: TPM_ALG_ID,
 ) -> Result<Vec<u8>, TpmError> {
-    let hash_len = Crypto::hash(hash_alg, &[])?.len();
+    let hash_len = Crypto::hash(crypto, hash_alg, &[])?.len();
     let mut accumulator = vec![0u8; hash_len];
     for assertion in assertions {
-        assertion.update_policy_digest(hash_alg, &mut accumulator)?;
+        assertion.update_policy_digest(crypto, hash_alg, &mut accumulator)?;
     }
     Ok(accumulator)
 }
@@ -140,10 +151,15 @@ impl PolicyCommandCode {
 }
 
 impl PolicyAssertion for PolicyCommandCode {
-    fn update_policy_digest(&self, hash_alg: TPM_ALG_ID, acc: &mut Vec<u8>) -> Result<(), TpmError> {
+    fn update_policy_digest(
+        &self,
+        crypto: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        acc: &mut Vec<u8>,
+    ) -> Result<(), TpmError> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&self.command_code.get_value().to_be_bytes());
-        policy_update(hash_alg, acc, TPM_CC::PolicyCommandCode, &buf, &[])
+        policy_update(crypto, hash_alg, acc, TPM_CC::PolicyCommandCode, &buf, &[])
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -164,13 +180,18 @@ impl PolicyLocality {
 }
 
 impl PolicyAssertion for PolicyLocality {
-    fn update_policy_digest(&self, hash_alg: TPM_ALG_ID, acc: &mut Vec<u8>) -> Result<(), TpmError> {
+    fn update_policy_digest(
+        &self,
+        crypto: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        acc: &mut Vec<u8>,
+    ) -> Result<(), TpmError> {
         // PolicyLocality: H(acc || TPM_CC_PolicyLocality || locality_byte)
         let mut buf = Vec::new();
         buf.extend_from_slice(acc);
         buf.extend_from_slice(&TPM_CC::PolicyLocality.get_value().to_be_bytes());
         buf.push(self.locality.get_value());
-        *acc = Crypto::hash(hash_alg, &buf)?;
+        *acc = Crypto::hash(crypto, hash_alg, &buf)?;
         Ok(())
     }
 
@@ -193,13 +214,18 @@ impl PolicyPcr {
 }
 
 impl PolicyAssertion for PolicyPcr {
-    fn update_policy_digest(&self, hash_alg: TPM_ALG_ID, acc: &mut Vec<u8>) -> Result<(), TpmError> {
+    fn update_policy_digest(
+        &self,
+        crypto: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        acc: &mut Vec<u8>,
+    ) -> Result<(), TpmError> {
         // Concatenate all PCR values and hash them
         let mut pcr_data = Vec::new();
         for v in &self.pcr_values {
             pcr_data.extend_from_slice(&v.buffer);
         }
-        let pcr_digest = Crypto::hash(hash_alg, &pcr_data)?;
+        let pcr_digest = Crypto::hash(crypto, hash_alg, &pcr_data)?;
 
         // Marshal PCR selections
         let mut sel_buf = TpmBuffer::new(None);
@@ -211,7 +237,7 @@ impl PolicyAssertion for PolicyPcr {
         let mut arg2 = Vec::new();
         arg2.extend_from_slice(sel_buf.trim());
         arg2.extend_from_slice(&pcr_digest);
-        policy_update(hash_alg, acc, TPM_CC::PolicyPCR, &arg2, &[])
+        policy_update(crypto, hash_alg, acc, TPM_CC::PolicyPCR, &arg2, &[])
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -234,9 +260,14 @@ impl PolicyPassword {
 }
 
 impl PolicyAssertion for PolicyPassword {
-    fn update_policy_digest(&self, hash_alg: TPM_ALG_ID, acc: &mut Vec<u8>) -> Result<(), TpmError> {
+    fn update_policy_digest(
+        &self,
+        crypto: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        acc: &mut Vec<u8>,
+    ) -> Result<(), TpmError> {
         // PolicyPassword uses the same digest as PolicyAuthValue per spec
-        policy_update(hash_alg, acc, TPM_CC::PolicyAuthValue, &[], &[])
+        policy_update(crypto, hash_alg, acc, TPM_CC::PolicyAuthValue, &[], &[])
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -261,8 +292,13 @@ impl PolicyAuthValue {
 }
 
 impl PolicyAssertion for PolicyAuthValue {
-    fn update_policy_digest(&self, hash_alg: TPM_ALG_ID, acc: &mut Vec<u8>) -> Result<(), TpmError> {
-        policy_update(hash_alg, acc, TPM_CC::PolicyAuthValue, &[], &[])
+    fn update_policy_digest(
+        &self,
+        crypto: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        acc: &mut Vec<u8>,
+    ) -> Result<(), TpmError> {
+        policy_update(crypto, hash_alg, acc, TPM_CC::PolicyAuthValue, &[], &[])
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -285,8 +321,13 @@ impl PolicyCpHash {
 }
 
 impl PolicyAssertion for PolicyCpHash {
-    fn update_policy_digest(&self, hash_alg: TPM_ALG_ID, acc: &mut Vec<u8>) -> Result<(), TpmError> {
-        policy_update(hash_alg, acc, TPM_CC::PolicyCpHash, &self.cp_hash, &[])
+    fn update_policy_digest(
+        &self,
+        crypto: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        acc: &mut Vec<u8>,
+    ) -> Result<(), TpmError> {
+        policy_update(crypto, hash_alg, acc, TPM_CC::PolicyCpHash, &self.cp_hash, &[])
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -307,8 +348,13 @@ impl PolicyNameHash {
 }
 
 impl PolicyAssertion for PolicyNameHash {
-    fn update_policy_digest(&self, hash_alg: TPM_ALG_ID, acc: &mut Vec<u8>) -> Result<(), TpmError> {
-        policy_update(hash_alg, acc, TPM_CC::PolicyNameHash, &self.name_hash, &[])
+    fn update_policy_digest(
+        &self,
+        crypto: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        acc: &mut Vec<u8>,
+    ) -> Result<(), TpmError> {
+        policy_update(crypto, hash_alg, acc, TPM_CC::PolicyNameHash, &self.name_hash, &[])
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -336,14 +382,19 @@ impl PolicyCounterTimer {
 }
 
 impl PolicyAssertion for PolicyCounterTimer {
-    fn update_policy_digest(&self, hash_alg: TPM_ALG_ID, acc: &mut Vec<u8>) -> Result<(), TpmError> {
+    fn update_policy_digest(
+        &self,
+        crypto: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        acc: &mut Vec<u8>,
+    ) -> Result<(), TpmError> {
         // arg2 = H(operandB || offset || operation)
         let mut inner = Vec::new();
         inner.extend_from_slice(&self.operand_b);
         inner.extend_from_slice(&self.offset.to_be_bytes());
         inner.extend_from_slice(&self.operation.get_value().to_be_bytes());
-        let arg_hash = Crypto::hash(hash_alg, &inner)?;
-        policy_update(hash_alg, acc, TPM_CC::PolicyCounterTimer, &arg_hash, &[])
+        let arg_hash = Crypto::hash(crypto, hash_alg, &inner)?;
+        policy_update(crypto, hash_alg, acc, TPM_CC::PolicyCounterTimer, &arg_hash, &[])
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -379,8 +430,13 @@ impl PolicySecret {
 }
 
 impl PolicyAssertion for PolicySecret {
-    fn update_policy_digest(&self, hash_alg: TPM_ALG_ID, acc: &mut Vec<u8>) -> Result<(), TpmError> {
-        policy_update(hash_alg, acc, TPM_CC::PolicySecret, &self.auth_object_name, &self.policy_ref)
+    fn update_policy_digest(
+        &self,
+        crypto: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        acc: &mut Vec<u8>,
+    ) -> Result<(), TpmError> {
+        policy_update(crypto, hash_alg, acc, TPM_CC::PolicySecret, &self.auth_object_name, &self.policy_ref)
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -433,12 +489,19 @@ impl PolicySigned {
 }
 
 impl PolicyAssertion for PolicySigned {
-    fn update_policy_digest(&self, hash_alg: TPM_ALG_ID, acc: &mut Vec<u8>) -> Result<(), TpmError> {
-        let key_name = self.public_key.get_name()?;
-        policy_update(hash_alg, acc, TPM_CC::PolicySigned, &key_name, &self.policy_ref)
+    fn update_policy_digest(
+        &self,
+        crypto: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        acc: &mut Vec<u8>,
+    ) -> Result<(), TpmError> {
+        let key_name = self.public_key.get_name(crypto)?;
+        policy_update(crypto, hash_alg, acc, TPM_CC::PolicySigned, &key_name, &self.policy_ref)
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
+        // Copied out because `tpm` is borrowed mutably by the command calls below.
+        let crypto = *tpm.crypto();
         let nonce_tpm = if self.include_tpm_nonce {
             session.sess_out.nonce.clone()
         } else {
@@ -462,12 +525,12 @@ impl PolicyAssertion for PolicySigned {
         to_hash.extend_from_slice(&self.expiration.to_be_bytes());
         to_hash.extend_from_slice(&self.cp_hash_a);
         to_hash.extend_from_slice(&self.policy_ref);
-        let a_hash = Crypto::hash(hash_alg, &to_hash)?;
+        let a_hash = Crypto::hash(&crypto, hash_alg, &to_hash)?;
 
         let sw_key = self.sw_key.as_ref().ok_or_else(|| {
             TpmError::GenericError("PolicySigned: no SW key set (callbacks not yet supported)".into())
         })?;
-        let signature = sw_key.sign(&a_hash, hash_alg)?;
+        let signature = sw_key.sign(&crypto, &a_hash, hash_alg)?;
 
         // Load the public key into the TPM (OWNER hierarchy for valid tickets)
         let pub_key_handle = tpm.LoadExternal(
@@ -512,14 +575,19 @@ impl PolicyNv {
 }
 
 impl PolicyAssertion for PolicyNv {
-    fn update_policy_digest(&self, hash_alg: TPM_ALG_ID, acc: &mut Vec<u8>) -> Result<(), TpmError> {
+    fn update_policy_digest(
+        &self,
+        crypto: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        acc: &mut Vec<u8>,
+    ) -> Result<(), TpmError> {
         // arg2 = H(operandB || offset || operation)
         let mut inner = Vec::new();
         inner.extend_from_slice(&self.operand_b);
         inner.extend_from_slice(&self.offset.to_be_bytes());
         inner.extend_from_slice(&self.operation.get_value().to_be_bytes());
-        let args_hash = Crypto::hash(hash_alg, &inner)?;
-        policy_update(hash_alg, acc, TPM_CC::PolicyNV, &args_hash, &self.nv_index_name)
+        let args_hash = Crypto::hash(crypto, hash_alg, &inner)?;
+        policy_update(crypto, hash_alg, acc, TPM_CC::PolicyNV, &args_hash, &self.nv_index_name)
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -552,25 +620,32 @@ impl PolicyOr {
 }
 
 impl PolicyAssertion for PolicyOr {
-    fn update_policy_digest(&self, hash_alg: TPM_ALG_ID, acc: &mut Vec<u8>) -> Result<(), TpmError> {
+    fn update_policy_digest(
+        &self,
+        crypto: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        acc: &mut Vec<u8>,
+    ) -> Result<(), TpmError> {
         // PolicyOR: accumulator = H(0...0 || TPM_CC_PolicyOR || digest1 || digest2 || ...)
-        let hash_len = Crypto::hash(hash_alg, &[])?.len();
+        let hash_len = Crypto::hash(crypto, hash_alg, &[])?.len();
         let mut buf = Vec::new();
         buf.extend_from_slice(&vec![0u8; hash_len]); // reset to zero
         buf.extend_from_slice(&TPM_CC::PolicyOR.get_value().to_be_bytes());
         for branch in &self.branches {
-            let branch_digest = compute_digest(branch, hash_alg)?;
+            let branch_digest = compute_digest(crypto, branch, hash_alg)?;
             buf.extend_from_slice(&branch_digest);
         }
-        *acc = Crypto::hash(hash_alg, &buf)?;
+        *acc = Crypto::hash(crypto, hash_alg, &buf)?;
         Ok(())
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
+        // Copied out because `tpm` is borrowed mutably by the command calls below.
+        let crypto = *tpm.crypto();
         let hash_alg = session.get_hash_alg();
         let mut hash_list: Vec<TPM2B_DIGEST> = Vec::new();
         for branch in &self.branches {
-            let digest = compute_digest(branch, hash_alg)?;
+            let digest = compute_digest(&crypto, branch, hash_alg)?;
             hash_list.push(TPM2B_DIGEST { buffer: digest });
         }
         tpm.PolicyOR(&sess_handle(session), &hash_list)?;
@@ -598,16 +673,23 @@ impl PolicyAuthorize {
 }
 
 impl PolicyAssertion for PolicyAuthorize {
-    fn update_policy_digest(&self, hash_alg: TPM_ALG_ID, acc: &mut Vec<u8>) -> Result<(), TpmError> {
-        let key_name = self.authorizing_key.get_name()?;
+    fn update_policy_digest(
+        &self,
+        crypto: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        acc: &mut Vec<u8>,
+    ) -> Result<(), TpmError> {
+        let key_name = self.authorizing_key.get_name(crypto)?;
         // PolicyAuthorize resets the digest, then does PolicyUpdate
-        let hash_len = Crypto::hash(hash_alg, &[])?.len();
+        let hash_len = Crypto::hash(crypto, hash_alg, &[])?.len();
         *acc = vec![0u8; hash_len];
-        policy_update(hash_alg, acc, TPM_CC::PolicyAuthorize, &key_name, &self.policy_ref)
+        policy_update(crypto, hash_alg, acc, TPM_CC::PolicyAuthorize, &key_name, &self.policy_ref)
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
-        let key_name = self.authorizing_key.get_name()?;
+        // Copied out because `tpm` is borrowed mutably by the command calls below.
+        let crypto = *tpm.crypto();
+        let key_name = self.authorizing_key.get_name(&crypto)?;
 
         // Load the authorizing key (OWNER hierarchy for valid tickets)
         let key_handle = tpm.LoadExternal(
@@ -620,7 +702,7 @@ impl PolicyAssertion for PolicyAuthorize {
         let mut a_hash_data = Vec::new();
         a_hash_data.extend_from_slice(&self.approved_policy);
         a_hash_data.extend_from_slice(&self.policy_ref);
-        let a_hash = Crypto::hash(self.authorizing_key.nameAlg, &a_hash_data)?;
+        let a_hash = Crypto::hash(&crypto, self.authorizing_key.nameAlg, &a_hash_data)?;
 
         let check_ticket = tpm.VerifySignature(
             &key_handle, &a_hash, &self.signature.signature,
@@ -654,14 +736,19 @@ impl PolicyDuplicationSelect {
 }
 
 impl PolicyAssertion for PolicyDuplicationSelect {
-    fn update_policy_digest(&self, hash_alg: TPM_ALG_ID, acc: &mut Vec<u8>) -> Result<(), TpmError> {
+    fn update_policy_digest(
+        &self,
+        crypto: &CryptoProvider,
+        hash_alg: TPM_ALG_ID,
+        acc: &mut Vec<u8>,
+    ) -> Result<(), TpmError> {
         let mut arg2 = Vec::new();
         if self.include_object {
             arg2.extend_from_slice(&self.object_name);
         }
         arg2.extend_from_slice(&self.new_parent_name);
         arg2.push(if self.include_object { 1 } else { 0 });
-        policy_update(hash_alg, acc, TPM_CC::PolicyDuplicationSelect, &arg2, &[])
+        policy_update(crypto, hash_alg, acc, TPM_CC::PolicyDuplicationSelect, &arg2, &[])
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
