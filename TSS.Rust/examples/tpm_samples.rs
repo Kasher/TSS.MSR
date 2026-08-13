@@ -30,7 +30,7 @@
 use std::io::{self, Write};
 use tss_rust::{
     auth_session::Session,
-    crypto::Crypto,
+    crypto::{software_provider::SOFTWARE_PROVIDER, Crypto},
     device::{TpmDevice, TpmTbsDevice}, error::TpmError,
     policy::{self, PolicyTree, PolicyCommandCode, PolicyLocality, PolicyOr, PolicyPassword},
     tpm2_impl::*, tpm_structure::{TpmEnum}, tpm_types::*
@@ -297,7 +297,7 @@ fn attestation(tpm: &mut Tpm2) -> Result<(), TpmError> {
 
     let pub_key = tpm.ReadPublic(&sig_key)?;
 
-    if (pub_key.outPublic.validate_certify(&pub_key.outPublic, &key_nonce, &key_quote)?) {
+    if (pub_key.outPublic.validate_certify(&SOFTWARE_PROVIDER, &pub_key.outPublic, &key_nonce, &key_quote)?) {
         println!("Key certification signature verification SUCCESSFUL! ");
     } else {
         println!("Key certification signature verification FAILED! ");
@@ -325,11 +325,11 @@ fn activate_credentials(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&srk)?;
 
     // Make a secret using the TSS.Rust RNG
-    let secret = Crypto::get_random(20);
+    let secret = Crypto::get_random(&SOFTWARE_PROVIDER, 20)?;
     let name_of_key_to_activate = key_to_activate.get_name()?;
 
     // Use TSS.Rust to get an activation blob
-    let cred = ek_pub.create_activation(&secret, &name_of_key_to_activate)?;
+    let cred = ek_pub.create_activation(&SOFTWARE_PROVIDER, &secret, &name_of_key_to_activate)?;
     let recovered_secret = tpm.ActivateCredential(&key_to_activate, &ek_handle, 
                                                      &cred.credential_blob, &cred.secret)?;
 
@@ -482,7 +482,7 @@ fn pcr_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("PCR 16 after event: {:?}", pcr_vals2.pcrValues);
 
     // Extend with a hash value
-    let extend_hash = TPMT_HA::new(TPM_ALG_ID::SHA256, &Crypto::hash(TPM_ALG_ID::SHA256, &[6, 7, 8])?);
+    let extend_hash = TPMT_HA::new(TPM_ALG_ID::SHA256, &Crypto::hash(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, &[6, 7, 8])?);
     tpm.PCR_Extend(&pcr_handle, &vec![extend_hash])?;
     println!("Extended hash into PCR 16");
 
@@ -531,7 +531,7 @@ fn primary_keys_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Created signing primary key with handle: {:?}", new_primary.handle);
 
     // Sign some data
-    let data_to_sign = Crypto::hash(TPM_ALG_ID::SHA256, b"Data to sign".as_ref())?;
+    let data_to_sign = Crypto::hash(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, b"Data to sign".as_ref())?;
     let signature = tpm.Sign(
         &new_primary.handle,
         &data_to_sign,
@@ -588,7 +588,7 @@ fn child_keys_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Created child signing key: {:?}", sign_key);
 
     // Sign some data
-    let data_to_sign = Crypto::hash(TPM_ALG_ID::SHA1, b"Test data for signing".as_ref())?;
+    let data_to_sign = Crypto::hash(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA1, b"Test data for signing".as_ref())?;
     let signature = tpm.Sign(
         &sign_key,
         &data_to_sign,
@@ -944,7 +944,7 @@ fn auth_sessions_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Loaded child key with HMAC session: {:?}", loaded_key);
 
     // Sign data with the loaded key using the session
-    let data_to_sign = Crypto::hash(TPM_ALG_ID::SHA1, b"Auth session test data".as_ref())?;
+    let data_to_sign = Crypto::hash(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA1, b"Auth session test data".as_ref())?;
     let sig = tpm.with_session(sess.clone()).Sign(
         &loaded_key, &data_to_sign,
         &TPMU_SIG_SCHEME::create(TPM_ALG_ID::NULL)?,
@@ -1114,7 +1114,7 @@ fn unseal_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     for v in &pcr_vals.pcrValues {
         pcr_digest_data.extend_from_slice(&v.buffer);
     }
-    let pcr_digest = Crypto::hash(bank, &pcr_digest_data)?;
+    let pcr_digest = Crypto::hash(&SOFTWARE_PROVIDER, bank, &pcr_digest_data)?;
 
     tpm.PolicyPCR(&session_handle(&trial), &pcr_digest, &pcr_selection)?;
     tpm.PolicyPassword(&session_handle(&trial))?;
@@ -1209,7 +1209,7 @@ fn policy_or_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     for v in &pcr_vals.pcrValues {
         pcr_digest_data.extend_from_slice(&v.buffer);
     }
-    let pcr_digest = Crypto::hash(bank, &pcr_digest_data)?;
+    let pcr_digest = Crypto::hash(&SOFTWARE_PROVIDER, bank, &pcr_digest_data)?;
 
     // Branch 1: PolicyPCR (current PCR value)
     let trial1 = tpm.start_auth_session(TPM_SE::TRIAL, TPM_ALG_ID::SHA256)?;
@@ -1294,7 +1294,7 @@ fn policy_with_passwords_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&session_handle(&trial))?;
     println!("PolicyPassword digest: {:?}", policy_digest);
 
-    let use_auth = Crypto::hash(TPM_ALG_ID::SHA256, b"password".as_ref())?;
+    let use_auth = Crypto::hash(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, b"password".as_ref())?;
     let mut hmac_handle = make_hmac_primary_with_policy(tpm, &policy_digest, &use_auth, TPM_ALG_ID::SHA256)?;
     hmac_handle.set_auth(&use_auth);
 
@@ -1328,7 +1328,7 @@ fn policy_with_passwords_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&session_handle(&trial2))?;
     println!("PolicyAuthValue digest: {:?}", policy_digest2);
 
-    let use_auth2 = Crypto::hash(TPM_ALG_ID::SHA256, b"password2".as_ref())?;
+    let use_auth2 = Crypto::hash(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, b"password2".as_ref())?;
     let mut hmac_handle2 = make_hmac_primary_with_policy(tpm, &policy_digest2, &use_auth2, TPM_ALG_ID::SHA256)?;
     hmac_handle2.set_auth(&use_auth2);
 
@@ -1410,7 +1410,7 @@ fn import_duplicate_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 
     // Load the imported key and sign with it
     let imported_key = tpm.Load(&primary, &imported, &new_key.outPublic)?;
-    let data_to_sign = Crypto::hash(TPM_ALG_ID::SHA256, b"test import".as_ref())?;
+    let data_to_sign = Crypto::hash(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, b"test import".as_ref())?;
     let sig = tpm.Sign(&imported_key, &data_to_sign,
                         &TPMU_SIG_SCHEME::create(TPM_ALG_ID::NULL)?,
                         &TPMT_TK_HASHCHECK::default())?;
@@ -1645,7 +1645,7 @@ fn software_keys_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Created duplicatable signing key in TPM");
 
     // Sign with the TPM key
-    let to_sign = Crypto::hash(TPM_ALG_ID::SHA256, b"hello from software key".as_ref())?;
+    let to_sign = Crypto::hash(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, b"hello from software key".as_ref())?;
     let tpm_sig = tpm.Sign(&tpm_key, &to_sign,
                             &TPMU_SIG_SCHEME::create(TPM_ALG_ID::NULL)?,
                             &TPMT_TK_HASHCHECK::default())?;
@@ -1707,7 +1707,7 @@ fn policy_pcr_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     for v in &pcr_vals.pcrValues {
         pcr_digest_data.extend_from_slice(&v.buffer);
     }
-    let pcr_digest = Crypto::hash(bank, &pcr_digest_data)?;
+    let pcr_digest = Crypto::hash(&SOFTWARE_PROVIDER, bank, &pcr_digest_data)?;
 
     // Compute policy digest using trial session
     let trial = tpm.start_auth_session(TPM_SE::TRIAL, TPM_ALG_ID::SHA256)?;
@@ -1757,7 +1757,7 @@ fn policy_cphash_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     // Compute trial PolicyCpHash to demonstrate how it works
     // cpHash = H(cc || handle_names || parameters)
     // We'll use a dummy hash value for the trial
-    let dummy_cphash = Crypto::hash(hash_alg, b"example cpHash input")?;
+    let dummy_cphash = Crypto::hash(&SOFTWARE_PROVIDER, hash_alg, b"example cpHash input")?;
 
     let trial = tpm.start_auth_session(TPM_SE::TRIAL, hash_alg)?;
     tpm.PolicyCpHash(&session_handle(&trial), &dummy_cphash)?;
@@ -1793,7 +1793,7 @@ fn policy_name_hash_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 
     // Compute nameHash for the OWNER handle
     let owner_name = TPM_HANDLE::new(TPM_RH::OWNER.get_value()).get_name()?;
-    let name_hash = Crypto::hash(hash_alg, &owner_name)?;
+    let name_hash = Crypto::hash(&SOFTWARE_PROVIDER, hash_alg, &owner_name)?;
     println!("nameHash(OWNER): {:?}", &name_hash[..8]);
 
     // Build policy digest using trial session
@@ -2156,7 +2156,7 @@ fn policy_signed_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
         },
         ..Default::default()
     };
-    sw_key.create_key()?;
+    sw_key.create_key(&SOFTWARE_PROVIDER)?;
     println!("Created software RSA-2048 signing key");
 
     // Load the public part into the TPM (OWNER hierarchy for valid tickets)
@@ -2173,8 +2173,8 @@ fn policy_signed_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     let trial = tpm.start_auth_session(TPM_SE::TRIAL, hash_alg)?;
     let policy_ref: Vec<u8> = vec![];
 
-    let dummy_hash = Crypto::hash(hash_alg, &[])?;
-    let dummy_sig = sw_key.sign(&dummy_hash, hash_alg)?;
+    let dummy_hash = Crypto::hash(&SOFTWARE_PROVIDER, hash_alg, &[])?;
+    let dummy_sig = sw_key.sign(&SOFTWARE_PROVIDER, &dummy_hash, hash_alg)?;
     tpm.PolicySigned(
         &auth_key_handle,
         &session_handle(&trial),
@@ -2197,10 +2197,10 @@ fn policy_signed_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     to_hash.extend_from_slice(&nonce_tpm);
     to_hash.extend_from_slice(&0i32.to_be_bytes()); // expiration = 0
     // cpHashA is empty, policyRef is empty
-    let a_hash = Crypto::hash(hash_alg, &to_hash)?;
+    let a_hash = Crypto::hash(&SOFTWARE_PROVIDER, hash_alg, &to_hash)?;
 
     // Step 4: Sign the aHash with our SW key
-    let signature = sw_key.sign(&a_hash, hash_alg)?;
+    let signature = sw_key.sign(&SOFTWARE_PROVIDER, &a_hash, hash_alg)?;
     println!("Signed aHash ({} bytes) with SW key", a_hash.len());
 
     // Step 5: Execute PolicySigned with the real signature
@@ -2265,7 +2265,7 @@ fn policy_authorize_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
         },
         ..Default::default()
     };
-    sw_key.create_key()?;
+    sw_key.create_key(&SOFTWARE_PROVIDER)?;
     println!("Created authorizing SW key");
 
     // Load the public part into the TPM (OWNER hierarchy for valid tickets)
@@ -2276,7 +2276,7 @@ fn policy_authorize_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     )?;
 
     // Get the authorizing key name
-    let key_name = sw_key.publicPart.get_name()?;
+    let key_name = sw_key.publicPart.get_name(&SOFTWARE_PROVIDER)?;
 
     // Step 1: Get the pre-policy digest we want to authorize (PolicyLocality(LOC_ONE))
     let trial_pre = tpm.start_auth_session(TPM_SE::TRIAL, hash_alg)?;
@@ -2291,9 +2291,9 @@ fn policy_authorize_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     let mut a_hash_data = Vec::new();
     a_hash_data.extend_from_slice(&pre_digest);
     a_hash_data.extend_from_slice(&policy_ref);
-    let a_hash = Crypto::hash(hash_alg, &a_hash_data)?;
+    let a_hash = Crypto::hash(&SOFTWARE_PROVIDER, hash_alg, &a_hash_data)?;
 
-    let signature = sw_key.sign(&a_hash, hash_alg)?;
+    let signature = sw_key.sign(&SOFTWARE_PROVIDER, &a_hash, hash_alg)?;
     println!("Signed approvedPolicy with authorizing key");
 
     // Step 3: Use VerifySignature to get a validation ticket
@@ -2324,12 +2324,12 @@ fn policy_authorize_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 
     // Compute expected: PolicyUpdate for PolicyAuthorize
     //   policyDigest_new = H(0...0 || TPM_CC_PolicyAuthorize || keyName || policyRef)
-    let hash_len = Crypto::hash(hash_alg, &[])?.len();
+    let hash_len = Crypto::hash(&SOFTWARE_PROVIDER, hash_alg, &[])?.len();
     let mut expected_data = vec![0u8; hash_len];
     expected_data.extend_from_slice(&TPM_CC::PolicyAuthorize.get_value().to_be_bytes());
     expected_data.extend_from_slice(&key_name);
     // policyRef is empty, no need to extend
-    let expected_digest = Crypto::hash(hash_alg, &expected_data)?;
+    let expected_digest = Crypto::hash(&SOFTWARE_PROVIDER, hash_alg, &expected_data)?;
 
     if actual_digest == expected_digest {
         println!("PolicyAuthorize digest is correct");
@@ -2358,7 +2358,7 @@ fn admin_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     // We can change the authValue for the owner hierarchy.
     println!(">> HierarchyChangeAuth");
 
-    let new_owner_auth = Crypto::hash(TPM_ALG_ID::SHA1, b"passw0rd")?;
+    let new_owner_auth = Crypto::hash(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA1, b"passw0rd")?;
     println!("Setting OWNER auth to hash of 'passw0rd': {} bytes", new_owner_auth.len());
 
     tpm.HierarchyChangeAuth(
@@ -2428,7 +2428,7 @@ fn policy_tree_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
         .add(PolicyCommandCode::new(TPM_CC::HMAC_Start));
 
     // Compute digest in software (no TPM trial session needed)
-    let sw_digest = tree.get_policy_digest(hash_alg)?;
+    let sw_digest = tree.get_policy_digest(&SOFTWARE_PROVIDER, hash_alg)?;
 
     // Verify against a trial session on the TPM
     let trial = tpm.start_auth_session(TPM_SE::TRIAL, hash_alg)?;
@@ -2446,7 +2446,7 @@ fn policy_tree_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
         .add(PolicyLocality::new(TPMA_LOCALITY::LOC_ZERO))
         .add(PolicyCommandCode::new(TPM_CC::Sign));
 
-    let sw_digest2 = tree2.get_policy_digest(hash_alg)?;
+    let sw_digest2 = tree2.get_policy_digest(&SOFTWARE_PROVIDER, hash_alg)?;
 
     let trial2 = tpm.start_auth_session(TPM_SE::TRIAL, hash_alg)?;
     tpm.PolicyLocality(&session_handle(&trial2), TPMA_LOCALITY::LOC_ZERO)?;
@@ -2472,7 +2472,7 @@ fn policy_tree_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     let or_tree = PolicyTree::new()
         .add(PolicyOr::new(vec![branch1, branch2]));
 
-    let sw_or_digest = or_tree.get_policy_digest(hash_alg)?;
+    let sw_or_digest = or_tree.get_policy_digest(&SOFTWARE_PROVIDER, hash_alg)?;
 
     // Verify OR digest with TPM trial session
     let trial_b1 = tpm.start_auth_session(TPM_SE::TRIAL, hash_alg)?;
@@ -2520,7 +2520,7 @@ fn policy_tree_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     let pw_tree = PolicyTree::new()
         .add(PolicyPassword::new());
 
-    let pw_digest = pw_tree.get_policy_digest(hash_alg)?;
+    let pw_digest = pw_tree.get_policy_digest(&SOFTWARE_PROVIDER, hash_alg)?;
 
     let trial_pw = tpm.start_auth_session(TPM_SE::TRIAL, hash_alg)?;
     tpm.PolicyPassword(&session_handle(&trial_pw))?;
@@ -2544,7 +2544,7 @@ fn seeded_session_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     let salt_key = make_storage_primary(tpm)?;
 
     // Generate a random salt
-    let salt = Crypto::get_random(20);
+    let salt = Crypto::get_random(&SOFTWARE_PROVIDER, 20)?;
     println!("Salt ({} bytes): {:?}", salt.len(), &salt[..8]);
 
     // Start a salted HMAC session.
@@ -2739,7 +2739,7 @@ fn reset_da_lockout(tpm: &mut Tpm2) {
 fn recover_endorsement_hierarchy(tpm: &mut Tpm2) {
     let hash_alg = TPM_ALG_ID::SHA256;
     let endorsement_name = TPM_HANDLE::new(TPM_RH::ENDORSEMENT.get_value()).get_name().unwrap_or_default();
-    let name_hash = Crypto::hash(hash_alg, &endorsement_name).unwrap_or_default();
+    let name_hash = Crypto::hash(&SOFTWARE_PROVIDER, hash_alg, &endorsement_name).unwrap_or_default();
 
     tpm.allow_errors();
     if let Ok(sess) = tpm.start_auth_session(TPM_SE::POLICY, hash_alg) {
@@ -2766,7 +2766,7 @@ fn recover_endorsement_hierarchy(tpm: &mut Tpm2) {
 /// [`RECOVER_HIERARCHIES_FLAG`].
 fn recover_owner_hierarchy(tpm: &mut Tpm2) {
     let known_auths: Vec<Vec<u8>> = vec![
-        Crypto::hash(TPM_ALG_ID::SHA1, b"passw0rd").unwrap_or_default(),
+        Crypto::hash(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA1, b"passw0rd").unwrap_or_default(),
         vec![0, 2, 1, 3, 5, 6], // bound_session_sample
     ];
     for known_auth in &known_auths {
