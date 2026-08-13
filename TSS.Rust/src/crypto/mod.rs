@@ -18,6 +18,7 @@ pub mod software_provider;
 
 use crate::{error::TpmError, tpm_types::*};
 use provider::{CryptoProvider, EccEphemeralAgreement};
+use zeroize::Zeroizing;
 
 /// The RSA public exponent the TPM 2.0 specification defines as the default (65537, "F4").
 ///
@@ -172,6 +173,10 @@ impl Crypto {
             TPM_ECC_CURVE::BN_P256 => Ok(32),
             TPM_ECC_CURVE::BN_P638 => Ok(80),
             TPM_ECC_CURVE::SM2_P256 => Ok(32),
+            // The registry's test curve, which is a 192 bit curve distinct from NIST P-192. Its
+            // width is answered like any other because this is a registry lookup; whether a
+            // backend will agree over it is a separate question that the backend answers.
+            TPM_ECC_CURVE::TEST_P192 => Ok(24),
             other => Err(TpmError::NotSupported(format!(
                 "Unknown ECC curve {other}, so its coordinate width is unknown"
             ))),
@@ -300,6 +305,19 @@ impl Crypto {
         result
     }
 
+    /// A buffer for a KDF stream, sized so that filling it never reallocates.
+    ///
+    /// Both KDFs append whole digests until the stream covers the request, so one digest beyond
+    /// `bytes_needed` is the most that can ever be generated. Reserving that up front is not an
+    /// optimisation: the buffer accumulates the derived key, and growing a `Vec` frees the old
+    /// allocation without wiping it, which would leave a copy of that key behind and defeat the
+    /// `Zeroizing` wrapper.
+    fn kdf_stream_buffer(hash_alg: TPM_ALG_ID, bytes_needed: usize) -> Zeroizing<Vec<u8>> {
+        Zeroizing::new(Vec::with_capacity(
+            bytes_needed + Self::digestSize(hash_alg),
+        ))
+    }
+
     // KDFa implementation as specified in TPM 2.0 Part 1
     pub fn kdfa(
         provider: &CryptoProvider,
@@ -319,7 +337,7 @@ impl Crypto {
         }
 
         let bytes_needed = bits.div_ceil(8);
-        let mut result = Vec::new();
+        let mut result = Self::kdf_stream_buffer(hash_alg, bytes_needed);
         let mut counter = 1u32;
 
         while result.len() < bytes_needed {
@@ -343,8 +361,9 @@ impl Crypto {
             // Number of bits in big-endian
             to_hash.extend_from_slice(&(bits as u32).to_be_bytes());
 
-            // Perform HMAC
-            let hmac_result = Self::hmac(provider, hash_alg, key, &to_hash)?;
+            // Perform HMAC. The digest is key material, so it is wiped once appended; `to_hash`
+            // is not, because everything in it is public and the key travels separately.
+            let hmac_result = Zeroizing::new(Self::hmac(provider, hash_alg, key, &to_hash)?);
             result.extend_from_slice(&hmac_result);
 
             counter = counter.checked_add(1).ok_or_else(|| {
@@ -399,11 +418,21 @@ impl Crypto {
         }
 
         let bytes_needed = bits.div_ceil(8);
-        let mut result = Vec::new();
+        let mut result = Self::kdf_stream_buffer(hash_alg, bytes_needed);
         let mut counter = 1u32;
 
+        // Unlike KDFa, the hashed input contains the agreed value itself, so the buffer holding it
+        // is as sensitive as `z` and is wiped on the same terms. Its length is the same on every
+        // iteration, so reserving it exactly means the one allocation is the only copy made.
+        let hashed_len = size_of_val(&counter)
+            + z.len()
+            + label.len()
+            + 1
+            + party_u_info.len()
+            + party_v_info.len();
+
         while result.len() < bytes_needed {
-            let mut to_hash = Vec::new();
+            let mut to_hash = Zeroizing::new(Vec::with_capacity(hashed_len));
 
             // Counter in big-endian
             to_hash.extend_from_slice(&counter.to_be_bytes());
@@ -419,7 +448,7 @@ impl Crypto {
             to_hash.extend_from_slice(party_u_info);
             to_hash.extend_from_slice(party_v_info);
 
-            let digest = Self::hash(provider, hash_alg, &to_hash)?;
+            let digest = Zeroizing::new(Self::hash(provider, hash_alg, &to_hash)?);
             result.extend_from_slice(&digest);
 
             counter = counter.checked_add(1).ok_or_else(|| {
@@ -644,6 +673,60 @@ mod tests {
     }
 
     #[test]
+    fn every_registry_curve_reports_a_coordinate_size() {
+        // The generated `try_from` accepts exactly the curves the TCG registry names, so sweeping
+        // it enumerates them without this test carrying a second list that could drift from the
+        // first. A curve that is in the registry has a defined width, and answering "unsupported"
+        // for one of them is the bug this guards against: it is a registry lookup, so it must not
+        // depend on which curves a backend happens to implement. `NONE` is the absence of a curve
+        // rather than a curve, so it has no width and is expected to fail.
+        let mut curves_seen = 0;
+
+        for raw in 0..=u16::MAX {
+            let Ok(curve) = TPM_ECC_CURVE::try_from(raw) else {
+                continue;
+            };
+            curves_seen += 1;
+
+            if raw == 0 {
+                assert!(
+                    Crypto::ecc_coordinate_size(curve).is_err(),
+                    "TPM_ECC_CURVE::NONE is not a curve and must not report a width"
+                );
+                continue;
+            }
+
+            let size = Crypto::ecc_coordinate_size(curve).unwrap_or_else(|e| {
+                panic!("registry curve {raw:#06x} has no coordinate size: {e:?}")
+            });
+            assert!(size > 0, "curve {raw:#06x} reported a zero width");
+        }
+
+        // Guards the sweep itself: if `try_from` ever stopped accepting anything, every assertion
+        // above would be skipped and the test would pass while checking nothing.
+        assert!(
+            curves_seen > 1,
+            "the curve sweep found nothing to check, so it proved nothing"
+        );
+    }
+
+    #[test]
+    fn ecc_coordinate_sizes_match_the_curve_widths() {
+        // Spot checks against the registry, so that a wrong-but-non-zero width cannot pass the
+        // sweep above. P-521 is the one worth stating outright: 521 bits occupies 66 octets, with
+        // the top seven bits of the leading octet unused.
+        for (curve, expected) in [
+            (TPM_ECC_CURVE::NIST_P192, 24),
+            (TPM_ECC_CURVE::NIST_P224, 28),
+            (TPM_ECC_CURVE::NIST_P256, 32),
+            (TPM_ECC_CURVE::NIST_P384, 48),
+            (TPM_ECC_CURVE::NIST_P521, 66),
+        ] {
+            assert_eq!(Crypto::ecc_coordinate_size(curve).ok(), Some(expected));
+        }
+    }
+
+    #[test]
     fn kdfa_rejects_a_request_for_zero_bits() {
         // Sizing a KDFa request from `digestSize` of a non-hash algorithm used to ask for zero
         // bits, and KDFa answered with an empty key instead of failing.
@@ -810,10 +893,16 @@ mod tests {
 
         // Zero bits would leave the loop immediately and return an empty key that callers would
         // treat as real, which is the same trap KDFa had.
-        assert!(
-            Crypto::kdfe(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, &z, "IDENTITY", &[], &[], 0)
-                .is_err()
-        );
+        assert!(Crypto::kdfe(
+            &SOFTWARE_PROVIDER,
+            TPM_ALG_ID::SHA256,
+            &z,
+            "IDENTITY",
+            &[],
+            &[],
+            0
+        )
+        .is_err());
 
         // An agreement that produced nothing cannot key anything, but hashing it would still
         // yield output that looks like a key.
