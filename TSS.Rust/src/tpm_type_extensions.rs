@@ -118,8 +118,9 @@ impl TPMT_PUBLIC {
             return Err(TpmError::NotSupported("Unsupported wrapping scheme".to_string()));
         }
 
-        // Generate random 16-byte seed
-        let mut seed = Crypto::get_random(16);
+        // The seed is the same size as the nameAlg digest, per TPM 2.0 Part 1 "Credential
+        // Protection". TSS.NET does the same in TpmKey.CreateActivationCredentials.
+        let mut seed = Crypto::get_random(Crypto::digestSize(self.nameAlg));
 
         // Get RSA public key components for encrypting the seed
         let rsa_pub_n = if let Some(TPMU_PUBLIC_ID::rsa(unique)) = &self.unique {
@@ -424,5 +425,164 @@ impl TSS_KEY {
                 sig: sig_bytes,
             })),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::rngs::OsRng;
+    use rsa::traits::PublicKeyParts;
+    use rsa::{Oaep, RsaPrivateKey};
+    use sha1::Sha1;
+    use sha2::Sha256;
+
+    /// Build a software stand-in for an endorsement key, along with its public area.
+    fn endorsement_key(name_alg: TPM_ALG_ID) -> Result<(RsaPrivateKey, TPMT_PUBLIC), TpmError> {
+        let private_key = RsaPrivateKey::new(&mut OsRng, 2048)
+            .map_err(|e| TpmError::GenericError(format!("RSA key generation failed: {e}")))?;
+
+        let parameters = TPMS_RSA_PARMS::new(
+            &TPMT_SYM_DEF_OBJECT::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
+            &Some(TPMU_ASYM_SCHEME::null(TPMS_NULL_ASYM_SCHEME::default())),
+            2048,
+            65537,
+        );
+
+        let public_area = TPMT_PUBLIC {
+            nameAlg: name_alg,
+            parameters: Some(TPMU_PUBLIC_PARMS::rsaDetail(parameters)),
+            unique: Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA {
+                buffer: private_key.n().to_bytes_be(),
+            })),
+            ..Default::default()
+        };
+
+        Ok((private_key, public_area))
+    }
+
+    /// A Name is a two byte algorithm identifier followed by a digest. `create_activation`
+    /// treats it as opaque input to KDFa and the integrity HMAC, so the contents do not matter
+    /// as long as both sides agree on them.
+    fn activated_name(name_alg: TPM_ALG_ID) -> Vec<u8> {
+        vec![0xab; 2 + Crypto::digestSize(name_alg)]
+    }
+
+    /// Play the part of `TPM2_ActivateCredential` so `create_activation` can be exercised end
+    /// to end without a TPM.
+    fn activate_credential(
+        endorsement_private: &RsaPrivateKey,
+        name_alg: TPM_ALG_ID,
+        activated_name: &[u8],
+        activation: &ActivationData,
+    ) -> Result<Vec<u8>, TpmError> {
+        let padding = match name_alg {
+            TPM_ALG_ID::SHA1 => Oaep::new_with_label::<Sha1, _>("IDENTITY\0"),
+            TPM_ALG_ID::SHA256 => Oaep::new_with_label::<Sha256, _>("IDENTITY\0"),
+            _ => {
+                return Err(TpmError::NotSupported(format!(
+                    "Unsupported nameAlg for OAEP: {:?}",
+                    name_alg
+                )))
+            }
+        };
+
+        let seed = endorsement_private
+            .decrypt(padding, &activation.secret)
+            .map_err(|e| TpmError::GenericError(format!("Seed decryption failed: {e}")))?;
+
+        // A TPM rejects a seed whose size is not the nameAlg digest size: TPM 2.0 Part 4,
+        // CryptSecretDecrypt, returns TPM_RC_VALUE. Modelling that check here is what makes
+        // this test able to catch a wrongly sized seed, because the seed itself travels inside
+        // the blob and would otherwise round trip at any length.
+        let expected_seed_size = Crypto::digestSize(name_alg);
+        if seed.len() != expected_seed_size {
+            return Err(TpmError::InvalidArraySize(format!(
+                "Seed is {} bytes, but {:?} requires {}",
+                seed.len(),
+                name_alg,
+                expected_seed_size
+            )));
+        }
+
+        let sym_key = Crypto::kdfa(name_alg, &seed, "STORAGE", activated_name, &[], 128)?;
+        let hmac_key = Crypto::kdfa(
+            name_alg,
+            &seed,
+            "INTEGRITY",
+            &[],
+            &[],
+            expected_seed_size * 8,
+        )?;
+
+        let mut to_hmac = activation.credential_blob.encIdentity.clone();
+        to_hmac.extend_from_slice(activated_name);
+        if Crypto::hmac(name_alg, &hmac_key, &to_hmac)? != activation.credential_blob.integrityHMAC
+        {
+            return Err(TpmError::GenericError(
+                "Integrity HMAC mismatch".to_string(),
+            ));
+        }
+
+        let plaintext = Crypto::cfb_xcrypt(
+            false,
+            &sym_key,
+            &[0u8; 16],
+            &activation.credential_blob.encIdentity,
+        )?;
+
+        let Some(size_bytes) = plaintext.get(..2) else {
+            return Err(TpmError::InvalidArraySize(
+                "Credential is missing its size prefix".to_string(),
+            ));
+        };
+        let size = u16::from_be_bytes([size_bytes[0], size_bytes[1]]) as usize;
+
+        plaintext
+            .get(2..2 + size)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| {
+                TpmError::InvalidArraySize("Credential size overruns the blob".to_string())
+            })
+    }
+
+    #[test]
+    fn create_activation_round_trips_through_a_software_activate() -> Result<(), TpmError> {
+        for name_alg in [TPM_ALG_ID::SHA1, TPM_ALG_ID::SHA256] {
+            let (endorsement_private, endorsement_public) = endorsement_key(name_alg)?;
+            let activated_name = activated_name(name_alg);
+            let credential = b"credential to activate".to_vec();
+
+            let activation = endorsement_public.create_activation(&credential, &activated_name)?;
+            let recovered = activate_credential(
+                &endorsement_private,
+                name_alg,
+                &activated_name,
+                &activation,
+            )?;
+
+            assert_eq!(recovered, credential, "nameAlg {:?}", name_alg);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn create_activation_rejects_a_non_storage_wrapping_scheme() -> Result<(), TpmError> {
+        let (_, mut endorsement_public) = endorsement_key(TPM_ALG_ID::SHA256)?;
+
+        let parameters = TPMS_RSA_PARMS::new(
+            &TPMT_SYM_DEF_OBJECT::new(TPM_ALG_ID::AES, 256, TPM_ALG_ID::CFB),
+            &Some(TPMU_ASYM_SCHEME::null(TPMS_NULL_ASYM_SCHEME::default())),
+            2048,
+            65537,
+        );
+        endorsement_public.parameters = Some(TPMU_PUBLIC_PARMS::rsaDetail(parameters));
+
+        assert!(endorsement_public
+            .create_activation(b"credential", &activated_name(TPM_ALG_ID::SHA256))
+            .is_err());
+
+        Ok(())
     }
 }

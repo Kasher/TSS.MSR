@@ -336,11 +336,7 @@ fn activate_credentials(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("Secret:                         {:?}", secret);
     println!("Secret recovered from Activate: {:?}", recovered_secret);
 
-    if secret != recovered_secret {
-        print_error("Secret mismatch when using TSS.Rust to create an activation credential (known create_activation issue)");
-    } else {
-        println!("TSS.Rust-created activation blob verified");
-    }
+    assert!(secret == recovered_secret, "Secret mismatch when using TSS.Rust to create an activation credential");
 
     // You can also use the TPM to make the activation credential
     let tpm_activator = tpm.MakeCredential(&ek_handle, &secret, &name_of_key_to_activate)?;
