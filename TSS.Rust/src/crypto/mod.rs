@@ -1,8 +1,9 @@
 //! Cryptography used to build and check TPM structures on the host.
 //!
 //! This module is split into two layers. [`provider`] defines the primitives TSS.Rust needs from
-//! a crypto backend, and [`software_provider`] supplies one built on the pure-Rust RustCrypto
-//! crates.
+//! a crypto backend, and two implementations are supplied: [`software_provider`], built on the
+//! pure-Rust RustCrypto crates and available everywhere, and [`cng_provider`], built on Windows
+//! CNG and adding no crates at all.
 //! [`Crypto`] sits on top and adds the logic that the TPM 2.0 specification defines in terms of
 //! those primitives — digest sizes, KDFa, signature validation — which is the same regardless of
 //! which backend is in use.
@@ -12,6 +13,8 @@
 //! visible at the call site. [`Tpm2`](crate::tpm2_impl::Tpm2) holds the provider it was built with
 //! and supplies it to the command dispatch path on the caller's behalf.
 
+#[cfg(all(feature = "cng-crypto", windows))]
+pub mod cng_provider;
 pub mod provider;
 #[cfg(feature = "software-crypto")]
 pub mod software_provider;
