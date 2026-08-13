@@ -136,7 +136,7 @@ impl Session {
         }
         hmac_key.extend_from_slice(salt);
 
-        let hash_bits = Crypto::digestSize(self.hash_alg) * 8;
+        let hash_bits = Crypto::digest_size_checked(self.hash_alg)? * 8;
         self.session_key = Crypto::kdfa(
             crypto,
             self.hash_alg,

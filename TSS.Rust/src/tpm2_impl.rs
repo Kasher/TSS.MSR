@@ -705,7 +705,7 @@ impl Tpm2 {
         symmetric: TPMT_SYM_DEF,
         salt: &[u8],
     ) -> Result<Session, TpmError> {
-        let nonce_size = Crypto::digestSize(auth_hash);
+        let nonce_size = Crypto::digest_size_checked(auth_hash)?;
         let nonce_caller = Crypto::get_random(&self.crypto, nonce_size)?;
 
         // For salted sessions, encrypt the salt to the tpmKey's public area

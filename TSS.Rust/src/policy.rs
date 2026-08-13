@@ -127,7 +127,7 @@ pub(crate) fn compute_digest(
     assertions: &[Box<dyn PolicyAssertion>],
     hash_alg: TPM_ALG_ID,
 ) -> Result<Vec<u8>, TpmError> {
-    let hash_len = Crypto::hash(crypto, hash_alg, &[])?.len();
+    let hash_len = Crypto::digest_size_checked(hash_alg)?;
     let mut accumulator = vec![0u8; hash_len];
     for assertion in assertions {
         assertion.update_policy_digest(crypto, hash_alg, &mut accumulator)?;
@@ -627,7 +627,7 @@ impl PolicyAssertion for PolicyOr {
         acc: &mut Vec<u8>,
     ) -> Result<(), TpmError> {
         // PolicyOR: accumulator = H(0...0 || TPM_CC_PolicyOR || digest1 || digest2 || ...)
-        let hash_len = Crypto::hash(crypto, hash_alg, &[])?.len();
+        let hash_len = Crypto::digest_size_checked(hash_alg)?;
         let mut buf = Vec::new();
         buf.extend_from_slice(&vec![0u8; hash_len]); // reset to zero
         buf.extend_from_slice(&TPM_CC::PolicyOR.get_value().to_be_bytes());
@@ -681,7 +681,7 @@ impl PolicyAssertion for PolicyAuthorize {
     ) -> Result<(), TpmError> {
         let key_name = self.authorizing_key.get_name(crypto)?;
         // PolicyAuthorize resets the digest, then does PolicyUpdate
-        let hash_len = Crypto::hash(crypto, hash_alg, &[])?.len();
+        let hash_len = Crypto::digest_size_checked(hash_alg)?;
         *acc = vec![0u8; hash_len];
         policy_update(crypto, hash_alg, acc, TPM_CC::PolicyAuthorize, &key_name, &self.policy_ref)
     }

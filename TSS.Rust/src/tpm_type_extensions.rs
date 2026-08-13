@@ -14,6 +14,30 @@ pub struct ActivationData {
     pub secret: Vec<u8>, // Encrypted seed (ENCRYPTED_SECRET)
 }
 
+impl TPMS_RSA_PARMS {
+    /// The public exponent as big-endian bytes with no leading zeros.
+    ///
+    /// The TPM encodes the default exponent of 2^16 + 1 as zero, so a stored zero is resolved
+    /// here rather than by rewriting the field. That distinction matters: a key's Name is a
+    /// digest over its whole public area, so normalising a stored zero to 65537 would change
+    /// the Name of every key that uses the default and silently break every policy digest,
+    /// `TPM2_ActivateCredential` and handle-to-Name comparison that depends on it. Resolve at
+    /// the point of use, never in the structure.
+    pub fn exponent_bytes(&self) -> Vec<u8> {
+        if self.exponent == 0 {
+            return RSA_DEFAULT_EXPONENT.to_vec();
+        }
+
+        // The exponent is non-zero, so at least one byte survives.
+        self.exponent
+            .to_be_bytes()
+            .iter()
+            .skip_while(|&&byte| byte == 0)
+            .copied()
+            .collect()
+    }
+}
+
 impl TPMT_PUBLIC {
     pub fn get_name(&self, crypto: &CryptoProvider) -> Result<Vec<u8>, TpmError> {
         let mut buffer = TpmBuffer::new(None);
@@ -127,7 +151,8 @@ impl TPMT_PUBLIC {
 
         // The seed is the same size as the nameAlg digest, per TPM 2.0 Part 1 "Credential
         // Protection". TSS.NET does the same in TpmKey.CreateActivationCredentials.
-        let mut seed = Crypto::get_random(crypto, Crypto::digestSize(self.nameAlg))?;
+        let name_alg_size = Crypto::digest_size_checked(self.nameAlg)?;
+        let mut seed = Crypto::get_random(crypto, name_alg_size)?;
 
         // Get RSA public key components for encrypting the seed
         let rsa_pub_n = if let Some(TPMU_PUBLIC_ID::rsa(unique)) = &self.unique {
@@ -140,7 +165,7 @@ impl TPMT_PUBLIC {
         let secret = Crypto::rsa_oaep_encrypt(
             crypto,
             rsa_pub_n,
-            &RSA_DEFAULT_EXPONENT,
+            &rsa_params.exponent_bytes(),
             self.nameAlg,
             b"IDENTITY\0",
             &seed,
@@ -181,7 +206,7 @@ impl TPMT_PUBLIC {
             "INTEGRITY",
             &[],
             &[],
-            Crypto::digestSize(self.nameAlg) * 8,
+            name_alg_size * 8,
         )?;
 
         // 5. Calculate outer HMAC
@@ -239,7 +264,7 @@ impl TPMT_PUBLIC {
         Crypto::rsa_oaep_encrypt(
             crypto,
             rsa_pub_n,
-            &RSA_DEFAULT_EXPONENT,
+            &rsa_params.exponent_bytes(),
             self.nameAlg,
             b"IDENTITY\0",
             data,
@@ -253,6 +278,12 @@ impl TPMT_PUBLIC {
         crypto: &CryptoProvider,
         salt: &[u8],
     ) -> Result<Vec<u8>, TpmError> {
+        let rsa_params = if let Some(TPMU_PUBLIC_PARMS::rsaDetail(params)) = &self.parameters {
+            params
+        } else {
+            return Err(TpmError::NotSupported("Only RSA keys can encrypt session salt".to_string()));
+        };
+
         let rsa_pub_n = if let Some(TPMU_PUBLIC_ID::rsa(unique)) = &self.unique {
             &unique.buffer
         } else {
@@ -262,7 +293,7 @@ impl TPMT_PUBLIC {
         Crypto::rsa_oaep_encrypt(
             crypto,
             rsa_pub_n,
-            &RSA_DEFAULT_EXPONENT,
+            &rsa_params.exponent_bytes(),
             self.nameAlg,
             b"SECRET\0",
             salt,
@@ -399,13 +430,14 @@ impl TSS_KEY {
     /// Generate an RSA key pair in software.
     /// Populates publicPart.unique with the modulus and privatePart with the first prime (p).
     pub fn create_key(&mut self, crypto: &CryptoProvider) -> Result<(), TpmError> {
-        let key_bits = if let Some(TPMU_PUBLIC_PARMS::rsaDetail(ref params)) = self.publicPart.parameters {
-            params.keyBits as usize
-        } else {
-            return Err(TpmError::GenericError("Only RSA key creation is supported".to_string()));
-        };
+        let (key_bits, exponent) =
+            if let Some(TPMU_PUBLIC_PARMS::rsaDetail(ref params)) = self.publicPart.parameters {
+                (params.keyBits as usize, params.exponent_bytes())
+            } else {
+                return Err(TpmError::GenericError("Only RSA key creation is supported".to_string()));
+            };
 
-        let key = Crypto::rsa_generate_keypair(crypto, key_bits)?;
+        let key = Crypto::rsa_generate_keypair(crypto, key_bits, &exponent)?;
 
         // Store modulus (n) in publicPart.unique
         self.publicPart.unique = Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA { buffer: key.modulus }));
@@ -425,9 +457,11 @@ impl TSS_KEY {
         digest: &[u8],
         hash_alg: TPM_ALG_ID,
     ) -> Result<TPMT_SIGNATURE, TpmError> {
-        if !matches!(&self.publicPart.parameters, Some(TPMU_PUBLIC_PARMS::rsaDetail(_))) {
+        let rsa_params = if let Some(TPMU_PUBLIC_PARMS::rsaDetail(ref params)) = self.publicPart.parameters {
+            params
+        } else {
             return Err(TpmError::GenericError("Only RSA signing is supported".to_string()));
-        }
+        };
 
         let n_bytes = if let Some(TPMU_PUBLIC_ID::rsa(ref pub_key)) = self.publicPart.unique {
             pub_key.buffer.clone()
@@ -439,6 +473,7 @@ impl TSS_KEY {
         let key = RsaKeyParts {
             modulus: n_bytes,
             prime: self.privatePart.clone(),
+            exponent: rsa_params.exponent_bytes(),
         };
 
         let sig_bytes = Crypto::rsa_pkcs1v15_sign(crypto, &key, hash_alg, digest)?;
@@ -602,6 +637,29 @@ mod tests {
     }
 
     #[test]
+    fn exponent_bytes_resolves_the_specification_default() {
+        // The TPM encodes 2^16 + 1 as zero on the wire.
+        let mut parms = TPMS_RSA_PARMS::new(
+            &TPMT_SYM_DEF_OBJECT::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
+            &Some(TPMU_ASYM_SCHEME::null(TPMS_NULL_ASYM_SCHEME::default())),
+            2048,
+            0,
+        );
+        assert_eq!(parms.exponent_bytes(), vec![0x01, 0x00, 0x01]);
+
+        // An explicit 65537 encodes to the same bytes as the default.
+        parms.exponent = 65537;
+        assert_eq!(parms.exponent_bytes(), vec![0x01, 0x00, 0x01]);
+
+        // A non default exponent is returned big-endian with leading zeros stripped.
+        parms.exponent = 3;
+        assert_eq!(parms.exponent_bytes(), vec![0x03]);
+
+        parms.exponent = u32::MAX;
+        assert_eq!(parms.exponent_bytes(), vec![0xff, 0xff, 0xff, 0xff]);
+    }
+
+    #[test]
     fn create_activation_rejects_a_non_storage_wrapping_scheme() -> Result<(), TpmError> {
         let (_, mut endorsement_public) = endorsement_key(TPM_ALG_ID::SHA256)?;
 
@@ -612,6 +670,26 @@ mod tests {
             65537,
         );
         endorsement_public.parameters = Some(TPMU_PUBLIC_PARMS::rsaDetail(parameters));
+
+        assert!(endorsement_public
+            .create_activation(
+                &SOFTWARE_PROVIDER,
+                b"credential",
+                &activated_name(TPM_ALG_ID::SHA256)
+            )
+            .is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn create_activation_rejects_a_name_alg_that_is_not_a_hash() -> Result<(), TpmError> {
+        // A behaviour lock, not a regression test: OAEP already rejects a non-hash nameAlg a few
+        // lines further on, so this held before the seed sizing was made checked. It pins the
+        // property itself so that reordering or relaxing either check cannot let a zero length
+        // seed through unnoticed.
+        let (_, mut endorsement_public) = endorsement_key(TPM_ALG_ID::SHA256)?;
+        endorsement_public.nameAlg = TPM_ALG_ID::NULL;
 
         assert!(endorsement_public
             .create_activation(
