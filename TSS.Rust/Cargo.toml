@@ -19,6 +19,10 @@ software-crypto = [
     "dep:aes",
     "dep:cipher",
     "dep:hmac",
+    "dep:p256",
+    "dep:p384",
+    "dep:p521",
+    "dep:elliptic-curve",
     "dep:rand",
     "dep:rsa",
     "dep:sha1",
@@ -41,6 +45,14 @@ rsa = { version = "0.9.8", optional = true }
 sha1 = { version = "0.10.6", features = ["oid"], optional = true }
 sha2 = { version = "0.10.8", features = ["oid"], optional = true }
 sm3 = { version = "0.4.2", optional = true }
+
+# The NIST prime curves a TPM may nominate for an ECC storage key, and the generic traits that
+# let one agreement routine serve all three. Default features are off because they would pull in
+# the ECDSA, PKCS#8 and PEM stacks, none of which this provider uses: it only ever agrees.
+elliptic-curve = { version = "0.13", default-features = false, features = ["ecdh", "sec1"], optional = true }
+p256 = { version = "0.13", default-features = false, features = ["ecdh"], optional = true }
+p384 = { version = "0.13", default-features = false, features = ["ecdh"], optional = true }
+p521 = { version = "0.13", default-features = false, features = ["ecdh"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61.1", features = ["Win32_Foundation", "Win32_Security", "Win32_System_TpmBaseServices", "Win32_Networking", "Win32_Networking_WinSock"] }
