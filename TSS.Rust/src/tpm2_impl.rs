@@ -279,7 +279,7 @@ impl Tpm2 {
                 }
 
                 // Roll nonces
-                self.roll_nonces();
+                self.roll_nonces()?;
 
                 // Prepare parameter encryption sessions
                 self.prepare_param_encryption_sessions();
@@ -684,7 +684,7 @@ impl Tpm2 {
         salt: &[u8],
     ) -> Result<Session, TpmError> {
         let nonce_size = Crypto::digestSize(auth_hash);
-        let nonce_caller = Crypto::get_random(nonce_size);
+        let nonce_caller = Crypto::get_random(nonce_size)?;
 
         // For salted sessions, encrypt the salt to the tpmKey's public area
         let encrypted_salt = if !salt.is_empty() {
@@ -727,15 +727,16 @@ impl Tpm2 {
     // Additional helper methods to support the dispatch_command and process_response implementations
 
     /// Roll nonces for all non-PWAP sessions
-    fn roll_nonces(&mut self) {
+    fn roll_nonces(&mut self) -> Result<(), TpmError> {
         if let Some(ref mut sessions) = self.sessions {
             for session in sessions.iter_mut() {
                 if !session.is_pwap() {
                     let nonce_size = session.sess_out.nonce.len();
-                    session.sess_in.nonce = Crypto::get_random(nonce_size.max(16));
+                    session.sess_in.nonce = Crypto::get_random(nonce_size.max(16))?;
                 }
             }
         }
+        Ok(())
     }
 
     /// Clear the current invocation state

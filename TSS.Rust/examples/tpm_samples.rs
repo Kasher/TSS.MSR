@@ -325,7 +325,7 @@ fn activate_credentials(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.FlushContext(&srk)?;
 
     // Make a secret using the TSS.Rust RNG
-    let secret = Crypto::get_random(20);
+    let secret = Crypto::get_random(20)?;
     let name_of_key_to_activate = key_to_activate.get_name()?;
 
     // Use TSS.Rust to get an activation blob
@@ -2544,7 +2544,7 @@ fn seeded_session_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     let salt_key = make_storage_primary(tpm)?;
 
     // Generate a random salt
-    let salt = Crypto::get_random(20);
+    let salt = Crypto::get_random(20)?;
     println!("Salt ({} bytes): {:?}", salt.len(), &salt[..8]);
 
     // Start a salted HMAC session.

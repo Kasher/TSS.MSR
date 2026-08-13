@@ -120,7 +120,7 @@ impl TPMT_PUBLIC {
 
         // The seed is the same size as the nameAlg digest, per TPM 2.0 Part 1 "Credential
         // Protection". TSS.NET does the same in TpmKey.CreateActivationCredentials.
-        let mut seed = Crypto::get_random(Crypto::digestSize(self.nameAlg));
+        let mut seed = Crypto::get_random(Crypto::digestSize(self.nameAlg))?;
 
         // Get RSA public key components for encrypting the seed
         let rsa_pub_n = if let Some(TPMU_PUBLIC_ID::rsa(unique)) = &self.unique {
