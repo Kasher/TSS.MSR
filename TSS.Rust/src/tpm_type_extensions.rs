@@ -1,35 +1,11 @@
-use crate::crypto::Crypto;
+use crate::crypto::{Crypto, RsaKeyParts, RSA_DEFAULT_EXPONENT};
 use crate::error::TpmError;
 use crate::tpm2_helpers::int_to_tpm;
 use crate::tpm_buffer::*;
 use crate::tpm_structure::TpmEnum;
 use crate::tpm_types::CertifyResponse;
 use crate::tpm_types::*;
-use rsa::{BigUint, RsaPublicKey, RsaPrivateKey, Oaep};
-use rsa::traits::{PublicKeyParts, PrivateKeyParts};
-use rand::rngs::OsRng;
 use zeroize::Zeroize;
-
-/// RSA-OAEP encrypt using the hash algorithm matching the key's nameAlg.
-fn rsa_oaep_encrypt(
-    rsa_key: &RsaPublicKey,
-    name_alg: TPM_ALG_ID,
-    label: &str,
-    data: &[u8],
-) -> Result<Vec<u8>, TpmError> {
-    match name_alg {
-        TPM_ALG_ID::SHA1 => rsa_key
-            .encrypt(&mut OsRng, Oaep::new_with_label::<sha1::Sha1, _>(label), data)
-            .map_err(|e| TpmError::GenericError(format!("RSA-OAEP encryption failed: {e}"))),
-        TPM_ALG_ID::SHA256 => rsa_key
-            .encrypt(&mut OsRng, Oaep::new_with_label::<sha2::Sha256, _>(label), data)
-            .map_err(|e| TpmError::GenericError(format!("RSA-OAEP encryption failed: {e}"))),
-        _ => Err(TpmError::NotSupported(format!(
-            "Unsupported nameAlg for OAEP: {:?}",
-            name_alg
-        ))),
-    }
-}
 
 /// Activation data returned from create_activation
 #[derive(Debug)]
@@ -142,8 +118,9 @@ impl TPMT_PUBLIC {
             return Err(TpmError::NotSupported("Unsupported wrapping scheme".to_string()));
         }
 
-        // Generate random 16-byte seed
-        let mut seed = Crypto::get_random(16);
+        // The seed is the same size as the nameAlg digest, per TPM 2.0 Part 1 "Credential
+        // Protection". TSS.NET does the same in TpmKey.CreateActivationCredentials.
+        let mut seed = Crypto::get_random(Crypto::digestSize(self.nameAlg));
 
         // Get RSA public key components for encrypting the seed
         let rsa_pub_n = if let Some(TPMU_PUBLIC_ID::rsa(unique)) = &self.unique {
@@ -152,13 +129,14 @@ impl TPMT_PUBLIC {
             return Err(TpmError::NotSupported("Invalid RSA public key".to_string()));
         };
 
-        let rsa_public_key = RsaPublicKey::new(
-            BigUint::from_bytes_be(rsa_pub_n),
-            BigUint::from_bytes_be(&[1, 0, 1]) // e = 65537
-        ).map_err(|_| TpmError::GenericError("Invalid RSA parameters".to_string()))?;
-
         // Encrypt seed with label "IDENTITY" using OAEP with the key's nameAlg
-        let secret = rsa_oaep_encrypt(&rsa_public_key, self.nameAlg, "IDENTITY\0", &seed)?;
+        let secret = Crypto::rsa_oaep_encrypt(
+            rsa_pub_n,
+            &RSA_DEFAULT_EXPONENT,
+            self.nameAlg,
+            b"IDENTITY\0",
+            &seed,
+        )?;
 
         // Make the credential blob:
 
@@ -244,16 +222,14 @@ impl TPMT_PUBLIC {
             return Err(TpmError::NotSupported("Invalid RSA public key".to_string()));
         };
 
-        // Create RSA public key (usually e = 65537)
-        let rsa_public_key = RsaPublicKey::new(
-            BigUint::from_bytes_be(rsa_pub_n),
-            BigUint::from_bytes_be(&[1, 0, 1]) // e = 65537
-        ).map_err(|_| TpmError::InvalidArraySize("Invalid RSA parameters".to_string()))?;
-
         // Encrypt the data using OAEP padding with the key's nameAlg
-        let encrypted_data = rsa_oaep_encrypt(&rsa_public_key, self.nameAlg, "IDENTITY\0", data)?;
-
-        Ok(encrypted_data)
+        Crypto::rsa_oaep_encrypt(
+            rsa_pub_n,
+            &RSA_DEFAULT_EXPONENT,
+            self.nameAlg,
+            b"IDENTITY\0",
+            data,
+        )
     }
 
     /// Encrypt a session salt for use with salted auth sessions.
@@ -265,20 +241,13 @@ impl TPMT_PUBLIC {
             return Err(TpmError::NotSupported("Only RSA keys can encrypt session salt".to_string()));
         };
 
-        let rsa_public_key = RsaPublicKey::new(
-            BigUint::from_bytes_be(rsa_pub_n),
-            BigUint::from_bytes_be(&[1, 0, 1]),
-        ).map_err(|_| TpmError::InvalidArraySize("Invalid RSA parameters".to_string()))?;
-
-        let padding = match self.nameAlg {
-            TPM_ALG_ID::SHA1 => Oaep::new_with_label::<sha1::Sha1, _>("SECRET\0"),
-            TPM_ALG_ID::SHA256 => Oaep::new_with_label::<sha2::Sha256, _>("SECRET\0"),
-            _ => return Err(TpmError::NotSupported(format!("Unsupported nameAlg for session salt: {:?}", self.nameAlg))),
-        };
-
-        rsa_public_key
-            .encrypt(&mut OsRng, padding, salt)
-            .map_err(|e| TpmError::GenericError(format!("Failed to encrypt session salt: {}", e)))
+        Crypto::rsa_oaep_encrypt(
+            rsa_pub_n,
+            &RSA_DEFAULT_EXPONENT,
+            self.nameAlg,
+            b"SECRET\0",
+            salt,
+        )
     }
 }
 
@@ -411,23 +380,19 @@ impl TSS_KEY {
     /// Generate an RSA key pair in software.
     /// Populates publicPart.unique with the modulus and privatePart with the first prime (p).
     pub fn create_key(&mut self) -> Result<(), TpmError> {
-        let rsa_params = if let Some(TPMU_PUBLIC_PARMS::rsaDetail(ref params)) = self.publicPart.parameters {
-            params.clone()
+        let key_bits = if let Some(TPMU_PUBLIC_PARMS::rsaDetail(ref params)) = self.publicPart.parameters {
+            params.keyBits as usize
         } else {
             return Err(TpmError::GenericError("Only RSA key creation is supported".to_string()));
         };
 
-        let key_bits = rsa_params.keyBits as usize;
-        let priv_key = RsaPrivateKey::new(&mut OsRng, key_bits)
-            .map_err(|e| TpmError::GenericError(format!("RSA key generation failed: {}", e)))?;
+        let key = Crypto::rsa_generate_keypair(key_bits)?;
 
         // Store modulus (n) in publicPart.unique
-        let n_bytes = priv_key.n().to_bytes_be();
-        self.publicPart.unique = Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA { buffer: n_bytes }));
+        self.publicPart.unique = Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA { buffer: key.modulus }));
 
         // Store first prime (p) as privatePart
-        let primes = priv_key.primes();
-        self.privatePart = primes[0].to_bytes_be();
+        self.privatePart = key.prime;
 
         Ok(())
     }
@@ -447,16 +412,12 @@ impl TSS_KEY {
         };
 
         // Reconstruct RSA private key from modulus + prime p
-        let n = BigUint::from_bytes_be(&n_bytes);
-        let p = BigUint::from_bytes_be(&self.privatePart);
-        let q = &n / &p;
-        let e = BigUint::from(65537u32);
+        let key = RsaKeyParts {
+            modulus: n_bytes,
+            prime: self.privatePart.clone(),
+        };
 
-        let priv_key = RsaPrivateKey::from_p_q(p, q, e)
-            .map_err(|e| TpmError::GenericError(format!("Failed to reconstruct RSA key: {}", e)))?;
-
-        let sig_bytes = priv_key.sign(Crypto::pkcs1v15_sign_scheme(hash_alg)?, digest)
-            .map_err(|e| TpmError::GenericError(format!("RSA signing failed: {}", e)))?;
+        let sig_bytes = Crypto::rsa_pkcs1v15_sign(&key, hash_alg, digest)?;
 
         Ok(TPMT_SIGNATURE {
             signature: Some(TPMU_SIGNATURE::rsassa(TPMS_SIGNATURE_RSASSA {
@@ -464,5 +425,164 @@ impl TSS_KEY {
                 sig: sig_bytes,
             })),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::rngs::OsRng;
+    use rsa::traits::PublicKeyParts;
+    use rsa::{Oaep, RsaPrivateKey};
+    use sha1::Sha1;
+    use sha2::Sha256;
+
+    /// Build a software stand-in for an endorsement key, along with its public area.
+    fn endorsement_key(name_alg: TPM_ALG_ID) -> Result<(RsaPrivateKey, TPMT_PUBLIC), TpmError> {
+        let private_key = RsaPrivateKey::new(&mut OsRng, 2048)
+            .map_err(|e| TpmError::GenericError(format!("RSA key generation failed: {e}")))?;
+
+        let parameters = TPMS_RSA_PARMS::new(
+            &TPMT_SYM_DEF_OBJECT::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
+            &Some(TPMU_ASYM_SCHEME::null(TPMS_NULL_ASYM_SCHEME::default())),
+            2048,
+            65537,
+        );
+
+        let public_area = TPMT_PUBLIC {
+            nameAlg: name_alg,
+            parameters: Some(TPMU_PUBLIC_PARMS::rsaDetail(parameters)),
+            unique: Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA {
+                buffer: private_key.n().to_bytes_be(),
+            })),
+            ..Default::default()
+        };
+
+        Ok((private_key, public_area))
+    }
+
+    /// A Name is a two byte algorithm identifier followed by a digest. `create_activation`
+    /// treats it as opaque input to KDFa and the integrity HMAC, so the contents do not matter
+    /// as long as both sides agree on them.
+    fn activated_name(name_alg: TPM_ALG_ID) -> Vec<u8> {
+        vec![0xab; 2 + Crypto::digestSize(name_alg)]
+    }
+
+    /// Play the part of `TPM2_ActivateCredential` so `create_activation` can be exercised end
+    /// to end without a TPM.
+    fn activate_credential(
+        endorsement_private: &RsaPrivateKey,
+        name_alg: TPM_ALG_ID,
+        activated_name: &[u8],
+        activation: &ActivationData,
+    ) -> Result<Vec<u8>, TpmError> {
+        let padding = match name_alg {
+            TPM_ALG_ID::SHA1 => Oaep::new_with_label::<Sha1, _>("IDENTITY\0"),
+            TPM_ALG_ID::SHA256 => Oaep::new_with_label::<Sha256, _>("IDENTITY\0"),
+            _ => {
+                return Err(TpmError::NotSupported(format!(
+                    "Unsupported nameAlg for OAEP: {:?}",
+                    name_alg
+                )))
+            }
+        };
+
+        let seed = endorsement_private
+            .decrypt(padding, &activation.secret)
+            .map_err(|e| TpmError::GenericError(format!("Seed decryption failed: {e}")))?;
+
+        // A TPM rejects a seed whose size is not the nameAlg digest size: TPM 2.0 Part 4,
+        // CryptSecretDecrypt, returns TPM_RC_VALUE. Modelling that check here is what makes
+        // this test able to catch a wrongly sized seed, because the seed itself travels inside
+        // the blob and would otherwise round trip at any length.
+        let expected_seed_size = Crypto::digestSize(name_alg);
+        if seed.len() != expected_seed_size {
+            return Err(TpmError::InvalidArraySize(format!(
+                "Seed is {} bytes, but {:?} requires {}",
+                seed.len(),
+                name_alg,
+                expected_seed_size
+            )));
+        }
+
+        let sym_key = Crypto::kdfa(name_alg, &seed, "STORAGE", activated_name, &[], 128)?;
+        let hmac_key = Crypto::kdfa(
+            name_alg,
+            &seed,
+            "INTEGRITY",
+            &[],
+            &[],
+            expected_seed_size * 8,
+        )?;
+
+        let mut to_hmac = activation.credential_blob.encIdentity.clone();
+        to_hmac.extend_from_slice(activated_name);
+        if Crypto::hmac(name_alg, &hmac_key, &to_hmac)? != activation.credential_blob.integrityHMAC
+        {
+            return Err(TpmError::GenericError(
+                "Integrity HMAC mismatch".to_string(),
+            ));
+        }
+
+        let plaintext = Crypto::cfb_xcrypt(
+            false,
+            &sym_key,
+            &[0u8; 16],
+            &activation.credential_blob.encIdentity,
+        )?;
+
+        let Some(size_bytes) = plaintext.get(..2) else {
+            return Err(TpmError::InvalidArraySize(
+                "Credential is missing its size prefix".to_string(),
+            ));
+        };
+        let size = u16::from_be_bytes([size_bytes[0], size_bytes[1]]) as usize;
+
+        plaintext
+            .get(2..2 + size)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| {
+                TpmError::InvalidArraySize("Credential size overruns the blob".to_string())
+            })
+    }
+
+    #[test]
+    fn create_activation_round_trips_through_a_software_activate() -> Result<(), TpmError> {
+        for name_alg in [TPM_ALG_ID::SHA1, TPM_ALG_ID::SHA256] {
+            let (endorsement_private, endorsement_public) = endorsement_key(name_alg)?;
+            let activated_name = activated_name(name_alg);
+            let credential = b"credential to activate".to_vec();
+
+            let activation = endorsement_public.create_activation(&credential, &activated_name)?;
+            let recovered = activate_credential(
+                &endorsement_private,
+                name_alg,
+                &activated_name,
+                &activation,
+            )?;
+
+            assert_eq!(recovered, credential, "nameAlg {:?}", name_alg);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn create_activation_rejects_a_non_storage_wrapping_scheme() -> Result<(), TpmError> {
+        let (_, mut endorsement_public) = endorsement_key(TPM_ALG_ID::SHA256)?;
+
+        let parameters = TPMS_RSA_PARMS::new(
+            &TPMT_SYM_DEF_OBJECT::new(TPM_ALG_ID::AES, 256, TPM_ALG_ID::CFB),
+            &Some(TPMU_ASYM_SCHEME::null(TPMS_NULL_ASYM_SCHEME::default())),
+            2048,
+            65537,
+        );
+        endorsement_public.parameters = Some(TPMU_PUBLIC_PARMS::rsaDetail(parameters));
+
+        assert!(endorsement_public
+            .create_activation(b"credential", &activated_name(TPM_ALG_ID::SHA256))
+            .is_err());
+
+        Ok(())
     }
 }
