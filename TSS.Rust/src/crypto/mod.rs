@@ -8,6 +8,7 @@
 //! which backend is in use.
 
 pub mod provider;
+#[cfg(feature = "software-crypto")]
 pub mod software_provider;
 
 use crate::{error::TpmError, tpm_types::*};
@@ -28,15 +29,26 @@ pub struct RsaKeyParts {
     pub prime: Vec<u8>,
 }
 
+/// The provider used when no backend is compiled in. Every primitive reports `NotSupported`.
+#[cfg(not(feature = "software-crypto"))]
+static UNIMPLEMENTED_PROVIDER: CryptoProvider = CryptoProvider::new_unimplemented();
+
 pub struct Crypto;
 
 impl Crypto {
     /// The backend every primitive is currently routed through.
     ///
     /// Callers will pass a [`CryptoProvider`] explicitly in a later change; until then the
-    /// software backend is selected here so that this refactoring does not alter behaviour.
+    /// backend is selected here so that this refactoring does not alter behaviour.
     fn provider() -> &'static CryptoProvider {
-        &software_provider::SOFTWARE_PROVIDER
+        #[cfg(feature = "software-crypto")]
+        {
+            &software_provider::SOFTWARE_PROVIDER
+        }
+        #[cfg(not(feature = "software-crypto"))]
+        {
+            &UNIMPLEMENTED_PROVIDER
+        }
     }
 
     /// The length in bytes of a digest produced by `alg`, or zero if `alg` is not a hash.
@@ -215,7 +227,9 @@ impl Crypto {
     }
 }
 
-#[cfg(test)]
+// These tests exercise the software provider directly -- they verify against the `rsa` crate --
+// so they only apply when that backend is compiled in.
+#[cfg(all(test, feature = "software-crypto"))]
 mod tests {
     use super::*;
     use rand::rngs::OsRng;

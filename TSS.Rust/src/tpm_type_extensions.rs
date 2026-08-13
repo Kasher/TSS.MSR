@@ -428,7 +428,9 @@ impl TSS_KEY {
     }
 }
 
-#[cfg(test)]
+// The activation round trip is checked against a software endorsement key built with the `rsa`
+// crate, so these tests only apply when the software provider is compiled in.
+#[cfg(all(test, feature = "software-crypto"))]
 mod tests {
     use super::*;
     use rand::rngs::OsRng;
