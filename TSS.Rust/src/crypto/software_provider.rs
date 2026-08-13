@@ -6,12 +6,12 @@
 //! provider instead.
 
 use super::provider::{CryptoProvider, RsaOps};
-use super::{Crypto, RsaKeyParts, RSA_DEFAULT_EXPONENT};
+use super::{Crypto, RsaKeyParts};
 use crate::{error::TpmError, tpm_types::TPM_ALG_ID};
 
-use aes::Aes128;
+use aes::{Aes128, Aes192, Aes256};
 use cipher::generic_array::GenericArray;
-use cipher::{BlockEncrypt, KeyInit};
+use cipher::{BlockEncrypt, BlockSizeUser, KeyInit};
 use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
 use rsa::traits::{PrivateKeyParts, PublicKeyParts};
@@ -35,11 +35,6 @@ pub static SOFTWARE_PROVIDER: CryptoProvider = CryptoProvider {
 };
 
 fn hash(alg: TPM_ALG_ID, data: &[u8]) -> Result<Vec<u8>, TpmError> {
-    // If the data is empty, return an empty digest of correct size
-    if data.is_empty() {
-        return Ok(vec![0; Crypto::digestSize(alg)]);
-    }
-
     let digest = match alg {
         TPM_ALG_ID::SHA1 => {
             let mut hasher = Sha1::new();
@@ -196,8 +191,9 @@ fn rsa_pkcs1v15_verify(
     Ok(rsa_key.verify(scheme, digest, signature).is_ok())
 }
 
-fn rsa_generate_keypair(key_bits: usize) -> Result<RsaKeyParts, TpmError> {
-    let priv_key = RsaPrivateKey::new(&mut OsRng, key_bits)
+fn rsa_generate_keypair(key_bits: usize, exponent: &[u8]) -> Result<RsaKeyParts, TpmError> {
+    let exponent_value = BigUint::from_bytes_be(exponent);
+    let priv_key = RsaPrivateKey::new_with_exp(&mut OsRng, key_bits, &exponent_value)
         .map_err(|e| TpmError::GenericError(format!("RSA key generation failed: {}", e)))?;
 
     let prime = priv_key
@@ -208,6 +204,7 @@ fn rsa_generate_keypair(key_bits: usize) -> Result<RsaKeyParts, TpmError> {
     Ok(RsaKeyParts {
         modulus: priv_key.n().to_bytes_be(),
         prime: prime.to_bytes_be(),
+        exponent: priv_key.e().to_bytes_be(),
     })
 }
 
@@ -229,8 +226,19 @@ fn rsa_pkcs1v15_sign(
 
     let modulus = BigUint::from_bytes_be(&key.modulus);
     let first_prime = BigUint::from_bytes_be(&key.prime);
+
+    // Integer division truncates, and `from_p_q` recomputes the modulus as `p * q` rather than
+    // checking it against the one supplied. Without this guard a prime that does not divide the
+    // modulus exactly would silently produce a key with a different modulus, whose signatures
+    // could never verify against the stored public key.
+    if (&modulus % &first_prime) != BigUint::from(0u32) {
+        return Err(TpmError::InvalidArraySize(
+            "RSA private key prime does not divide the modulus".to_string(),
+        ));
+    }
+
     let second_prime = &modulus / &first_prime;
-    let exponent = BigUint::from_bytes_be(&RSA_DEFAULT_EXPONENT);
+    let exponent = BigUint::from_bytes_be(&key.exponent);
 
     let priv_key = RsaPrivateKey::from_p_q(first_prime, second_prime, exponent)
         .map_err(|e| TpmError::GenericError(format!("Failed to reconstruct RSA key: {}", e)))?;
@@ -245,44 +253,60 @@ fn aes_cfb(encrypt: bool, key: &[u8], iv: &[u8], data: &[u8]) -> Result<Vec<u8>,
         return Ok(Vec::new());
     }
 
-    if key.len() != 16 && key.len() != 24 && key.len() != 32 {
-        return Err(TpmError::InvalidArraySize(
-            "Invalid AES key length".to_string(),
-        ));
+    // The key length selects the AES variant. All three share a 128 bit block, so the mode
+    // itself is identical; only the cipher differs.
+    match key.len() {
+        16 => aes_cfb_with::<Aes128>(encrypt, key, iv, data),
+        24 => aes_cfb_with::<Aes192>(encrypt, key, iv, data),
+        32 => aes_cfb_with::<Aes256>(encrypt, key, iv, data),
+        other => Err(TpmError::InvalidArraySize(format!(
+            "Invalid AES key length: {other} bytes"
+        ))),
     }
+}
 
-    if iv.len() != 16 {
-        return Err(TpmError::InvalidArraySize("IV must be 16 bytes".to_string()));
+/// CFB mode over a full block width, built on `C`'s raw block encryption.
+///
+/// CFB encrypts the feedback value in both directions, so only the block encryption of `C` is
+/// needed even when decrypting.
+fn aes_cfb_with<C>(encrypt: bool, key: &[u8], iv: &[u8], data: &[u8]) -> Result<Vec<u8>, TpmError>
+where
+    C: BlockEncrypt + BlockSizeUser + KeyInit,
+{
+    let cipher = C::new_from_slice(key)
+        .map_err(|_| TpmError::InvalidArraySize("Invalid AES key length".to_string()))?;
+
+    let mut feedback = GenericArray::<u8, C::BlockSize>::default();
+    let block_size = feedback.len();
+    if iv.len() != block_size {
+        return Err(TpmError::InvalidArraySize(format!(
+            "IV must be {block_size} bytes"
+        )));
     }
+    feedback.copy_from_slice(iv);
 
-    let cipher = Aes128::new(GenericArray::from_slice(key));
     let mut result = Vec::with_capacity(data.len());
-    let mut feedback = *GenericArray::from_slice(iv);
 
-    for chunk in data.chunks(16) {
+    for chunk in data.chunks(block_size) {
         // Encrypt the feedback (IV or previous ciphertext)
-        let mut encrypted_feedback = feedback;
+        let mut encrypted_feedback = feedback.clone();
         cipher.encrypt_block(&mut encrypted_feedback);
 
+        // The next feedback value is the ciphertext either way: on encryption that is the
+        // output, on decryption it is the input.
+        let mut ct_block = GenericArray::<u8, C::BlockSize>::default();
         if encrypt {
-            // CFB encrypt: ciphertext = plaintext XOR encrypt(feedback)
-            // Next feedback = ciphertext
-            let mut ct_block = [0u8; 16];
             for (i, &b) in chunk.iter().enumerate() {
                 ct_block[i] = b ^ encrypted_feedback[i];
                 result.push(ct_block[i]);
             }
-            feedback.copy_from_slice(&ct_block);
         } else {
-            // CFB decrypt: plaintext = ciphertext XOR encrypt(feedback)
-            // Next feedback = ciphertext (input)
-            let mut ct_block = [0u8; 16];
             ct_block[..chunk.len()].copy_from_slice(chunk);
             for (i, &b) in chunk.iter().enumerate() {
                 result.push(b ^ encrypted_feedback[i]);
             }
-            feedback.copy_from_slice(&ct_block);
         }
+        feedback = ct_block;
     }
 
     result.truncate(data.len());

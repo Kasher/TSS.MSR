@@ -54,7 +54,8 @@ pub type RsaPkcs1v15VerifyFn = fn(
 ) -> Result<bool, TpmError>;
 
 /// Signature of [`RsaOps::generate_keypair`].
-pub type RsaGenerateKeypairFn = fn(key_bits: usize) -> Result<RsaKeyParts, TpmError>;
+pub type RsaGenerateKeypairFn =
+    fn(key_bits: usize, exponent: &[u8]) -> Result<RsaKeyParts, TpmError>;
 
 /// Signature of [`RsaOps::pkcs1v15_sign`].
 pub type RsaPkcs1v15SignFn =
@@ -110,7 +111,7 @@ impl RsaOps {
         Self {
             oaep_encrypt: |_, _, _, _, _| Err(unimplemented("RSA-OAEP encryption")),
             pkcs1v15_verify: |_, _, _, _, _| Err(unimplemented("RSA PKCS#1 v1.5 verification")),
-            generate_keypair: |_| Err(unimplemented("RSA key generation")),
+            generate_keypair: |_, _| Err(unimplemented("RSA key generation")),
             pkcs1v15_sign: |_, _, _| Err(unimplemented("RSA PKCS#1 v1.5 signing")),
         }
     }

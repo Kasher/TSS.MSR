@@ -19,19 +19,25 @@ pub mod software_provider;
 use crate::{error::TpmError, tpm_types::*};
 use provider::CryptoProvider;
 
-/// The RSA public exponent used by every key this library creates or consumes (65537, "F4").
+/// The RSA public exponent the TPM 2.0 specification defines as the default (65537, "F4").
 ///
-/// A TPM encodes this value as zero in `TPMS_RSA_PARMS::exponent`, so it never travels on the
-/// wire and has to be supplied by the caller.
+/// `TPMS_RSA_PARMS::exponent` encodes this value as zero, so it never travels on the wire.
+/// Resolve a stored zero with `TPMS_RSA_PARMS::exponent_bytes` rather than reaching for this
+/// constant directly, so that a key declaring a different exponent is honoured.
 pub const RSA_DEFAULT_EXPONENT: [u8; 3] = [0x01, 0x00, 0x01];
 
-/// RSA private key material in the form `TSS_KEY` persists it: the modulus and the first prime.
+/// RSA private key material in the form `TSS_KEY` persists it: the modulus and the first prime,
+/// plus the public exponent needed to reconstruct the key.
 ///
 /// The second prime is recovered by dividing the modulus by the first, so it is not stored.
 #[derive(Clone, Debug)]
 pub struct RsaKeyParts {
     pub modulus: Vec<u8>,
     pub prime: Vec<u8>,
+    /// The public exponent, big-endian and without leading zeros. Callers holding a
+    /// `TPMS_RSA_PARMS` should populate this with `TPMS_RSA_PARMS::exponent_bytes`, which
+    /// resolves the specification's zero-means-65537 encoding.
+    pub exponent: Vec<u8>,
 }
 
 pub struct Crypto;
@@ -40,6 +46,14 @@ impl Crypto {
     /// The length in bytes of a digest produced by `alg`, or zero if `alg` is not a hash.
     ///
     /// This is fixed by the TPM 2.0 specification, so it does not depend on the backend.
+    ///
+    /// Returning zero rather than an error is deliberate, and there are two reasons not to
+    /// "fix" it. `TPMT_HA` unmarshalling calls this to decide how many digest bytes to read,
+    /// and a `TPMT_HA` selected by `TPM_ALG_NULL` carries no digest at all, so zero is the
+    /// correct answer there rather than a failure. That call site also lives in a generated
+    /// file, which cannot be hand edited, and it has no error path to return one through.
+    ///
+    /// Every other caller wants `digest_size_checked`, which turns the zero into an error.
     // The function is called from an auto-generated file that expects this specific (non snake_cased) name
     #[allow(non_snake_case)]
     pub fn digestSize(alg: TPM_ALG_ID) -> usize {
@@ -50,6 +64,21 @@ impl Crypto {
             TPM_ALG_ID::SHA512 => 64,
             TPM_ALG_ID::SM3_256 => 32,
             _ => 0,
+        }
+    }
+
+    /// The length in bytes of a digest produced by `alg`, or an error if `alg` is not a hash.
+    ///
+    /// This is the variant to reach for by default. `digestSize` answers zero for a non-hash
+    /// algorithm, which silently produces an empty seed, key or nonce wherever the result sizes
+    /// a buffer. Use `digestSize` only where a zero length is a legitimate answer, which in
+    /// practice means `TPMT_HA` unmarshalling.
+    pub fn digest_size_checked(alg: TPM_ALG_ID) -> Result<usize, TpmError> {
+        match Self::digestSize(alg) {
+            0 => Err(TpmError::NotSupported(format!(
+                "Not a hash algorithm: {alg:?}"
+            ))),
+            size => Ok(size),
         }
     }
 
@@ -98,12 +127,18 @@ impl Crypto {
         (provider.rsa.pkcs1v15_verify)(modulus, exponent, hash_alg, digest, signature)
     }
 
-    /// Generate an RSA key pair, returning the modulus and the first prime.
+    /// Generate an RSA key pair with the given public exponent, returning the modulus and the
+    /// first prime.
+    ///
+    /// `exponent` is big-endian. Callers holding a `TPMS_RSA_PARMS` should pass
+    /// `TPMS_RSA_PARMS::exponent_bytes`, which resolves the zero-means-65537 encoding. A backend
+    /// that cannot honour an arbitrary exponent must reject it rather than substitute its own.
     pub fn rsa_generate_keypair(
         provider: &CryptoProvider,
         key_bits: usize,
+        exponent: &[u8],
     ) -> Result<RsaKeyParts, TpmError> {
-        (provider.rsa.generate_keypair)(key_bits)
+        (provider.rsa.generate_keypair)(key_bits, exponent)
     }
 
     /// Sign an already computed digest with RSASSA-PKCS1-v1_5.
@@ -122,11 +157,14 @@ impl Crypto {
         signed_blob_hash: Vec<u8>,
         signature: &Option<TPMU_SIGNATURE>,
     ) -> Result<bool, TpmError> {
-        if !matches!(&public_key.parameters, Some(TPMU_PUBLIC_PARMS::rsaDetail(_))) {
-            return Err(TpmError::NotSupported(
-                "ValidateSignature: Only RSA is supported".to_string(),
-            ));
-        };
+        let rsa_params =
+            if let Some(TPMU_PUBLIC_PARMS::rsaDetail(params)) = &public_key.parameters {
+                params
+            } else {
+                return Err(TpmError::NotSupported(
+                    "ValidateSignature: Only RSA is supported".to_string(),
+                ));
+            };
 
         let signature = if let Some(TPMU_SIGNATURE::rsassa(signature)) = &signature {
             signature
@@ -144,7 +182,7 @@ impl Crypto {
             ));
         };
 
-        let expected_digest_size = Self::digestSize(signature.hash);
+        let expected_digest_size = Self::digest_size_checked(signature.hash)?;
         if signed_blob_hash.len() != expected_digest_size {
             return Err(TpmError::InvalidArraySize(format!(
                 "ValidateSignature: digest length {} does not match {:?} length {}",
@@ -157,7 +195,7 @@ impl Crypto {
         Self::rsa_pkcs1v15_verify(
             provider,
             rsa_pub_key,
-            &RSA_DEFAULT_EXPONENT,
+            &rsa_params.exponent_bytes(),
             signature.hash,
             &signed_blob_hash,
             &signature.sig,
@@ -174,6 +212,14 @@ impl Crypto {
         context_v: &[u8],
         bits: usize,
     ) -> Result<Vec<u8>, TpmError> {
+        // Zero bits would make the loop below exit immediately and hand back an empty key, which
+        // every caller would then use as if it were real key material.
+        if bits == 0 {
+            return Err(TpmError::InvalidArraySize(
+                "KDFa was asked to produce zero bits of key material".to_string(),
+            ));
+        }
+
         let bytes_needed = bits.div_ceil(8);
         let mut result = Vec::new();
         let mut counter = 1u32;
@@ -308,7 +354,7 @@ mod tests {
 
     #[test]
     fn rsa_sign_round_trips_through_verify() -> Result<(), TpmError> {
-        let key = Crypto::rsa_generate_keypair(&SOFTWARE_PROVIDER, 2048)?;
+        let key = Crypto::rsa_generate_keypair(&SOFTWARE_PROVIDER, 2048, &RSA_DEFAULT_EXPONENT)?;
         let digest = Sha256::digest(b"software key signing regression").to_vec();
 
         let signature =
@@ -330,6 +376,7 @@ mod tests {
         let key = RsaKeyParts {
             modulus: vec![0xff; 256],
             prime: vec![0u8; 128],
+            exponent: RSA_DEFAULT_EXPONENT.to_vec(),
         };
 
         assert!(Crypto::rsa_pkcs1v15_sign(
@@ -339,5 +386,146 @@ mod tests {
             &[0u8; 32]
         )
         .is_err());
+    }
+
+    #[test]
+    fn rsa_sign_rejects_a_prime_that_does_not_divide_the_modulus() {
+        // `from_p_q` recomputes the modulus as `p * q` rather than checking it against the one
+        // supplied, so a prime that does not divide the modulus exactly would otherwise yield a
+        // key with a silently different modulus whose signatures could never verify.
+        let key = RsaKeyParts {
+            modulus: vec![0xff; 256],
+            prime: vec![0xfe; 128],
+            exponent: RSA_DEFAULT_EXPONENT.to_vec(),
+        };
+
+        assert!(Crypto::rsa_pkcs1v15_sign(
+            &SOFTWARE_PROVIDER,
+            &key,
+            TPM_ALG_ID::SHA256,
+            &[0u8; 32]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rsa_round_trips_with_a_non_default_exponent() -> Result<(), TpmError> {
+        // Generating with an exponent other than the default proves that generation, signing and
+        // verification all read the caller's exponent instead of assuming 65537.
+        let exponent: [u8; 3] = [0x00, 0x00, 0x03];
+        let key = Crypto::rsa_generate_keypair(&SOFTWARE_PROVIDER, 2048, &exponent)?;
+        assert_eq!(key.exponent, vec![0x03]);
+
+        let digest = Sha256::digest(b"non default exponent").to_vec();
+        let signature =
+            Crypto::rsa_pkcs1v15_sign(&SOFTWARE_PROVIDER, &key, TPM_ALG_ID::SHA256, &digest)?;
+
+        assert!(Crypto::rsa_pkcs1v15_verify(
+            &SOFTWARE_PROVIDER,
+            &key.modulus,
+            &key.exponent,
+            TPM_ALG_ID::SHA256,
+            &digest,
+            &signature,
+        )?);
+
+        // The default exponent must not verify a signature made with this key.
+        assert!(!Crypto::rsa_pkcs1v15_verify(
+            &SOFTWARE_PROVIDER,
+            &key.modulus,
+            &RSA_DEFAULT_EXPONENT,
+            TPM_ALG_ID::SHA256,
+            &digest,
+            &signature,
+        )?);
+        Ok(())
+    }
+
+    #[test]
+    fn hash_of_empty_input_is_the_real_digest() -> Result<(), TpmError> {
+        // The empty string has a well known SHA-256 digest. Returning zeros of the right length
+        // instead looks plausible but never matches what a TPM computes.
+        let expected: [u8; 32] = [
+            0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
+            0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
+            0x78, 0x52, 0xb8, 0x55,
+        ];
+        assert_eq!(
+            Crypto::hash(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, &[])?,
+            expected
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn hash_of_empty_input_still_rejects_an_unsupported_algorithm() {
+        assert!(Crypto::hash(&SOFTWARE_PROVIDER, TPM_ALG_ID::NULL, &[]).is_err());
+    }
+
+    #[test]
+    fn digest_size_checked_rejects_a_non_hash_algorithm() {
+        assert_eq!(
+            Crypto::digest_size_checked(TPM_ALG_ID::SHA256).ok(),
+            Some(32)
+        );
+        assert!(Crypto::digest_size_checked(TPM_ALG_ID::NULL).is_err());
+        assert!(Crypto::digest_size_checked(TPM_ALG_ID::RSA).is_err());
+    }
+
+    #[test]
+    fn kdfa_rejects_a_request_for_zero_bits() {
+        // Sizing a KDFa request from `digestSize` of a non-hash algorithm used to ask for zero
+        // bits, and KDFa answered with an empty key instead of failing.
+        assert!(Crypto::kdfa(
+            &SOFTWARE_PROVIDER,
+            TPM_ALG_ID::SHA256,
+            b"key",
+            "ATH",
+            &[],
+            &[],
+            0
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn kdfa_produces_the_requested_length() -> Result<(), TpmError> {
+        let derived = Crypto::kdfa(
+            &SOFTWARE_PROVIDER,
+            TPM_ALG_ID::SHA256,
+            b"key",
+            "ATH",
+            &[],
+            &[],
+            256,
+        )?;
+        assert_eq!(derived.len(), 32);
+        Ok(())
+    }
+
+    #[test]
+    fn aes_cfb_round_trips_at_every_key_size() -> Result<(), TpmError> {
+        // AES-192 and AES-256 keys used to be handed to an AES-128 cipher, which panicked.
+        let iv = [0x5au8; 16];
+        // Deliberately not a multiple of the block size, to cover the trailing partial block.
+        let plaintext = b"CFB spans partial blocks too";
+
+        for key_size in [16usize, 24, 32] {
+            let key = vec![0xa5u8; key_size];
+            let ciphertext = Crypto::cfb_xcrypt(&SOFTWARE_PROVIDER, true, &key, &iv, plaintext)?;
+            assert_eq!(ciphertext.len(), plaintext.len());
+            assert_ne!(ciphertext.as_slice(), plaintext.as_slice());
+
+            let recovered = Crypto::cfb_xcrypt(&SOFTWARE_PROVIDER, false, &key, &iv, &ciphertext)?;
+            assert_eq!(recovered.as_slice(), plaintext.as_slice());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn aes_cfb_rejects_an_unsupported_key_size() {
+        assert!(
+            Crypto::cfb_xcrypt(&SOFTWARE_PROVIDER, true, &[0u8; 20], &[0u8; 16], b"data").is_err()
+        );
     }
 }
