@@ -40,6 +40,49 @@ pub trait PolicyAssertion {
 // Helper: PolicyUpdate - shared digest update logic per TPM spec
 // ---------------------------------------------------------------------------
 
+/// One `TPM_HASH::Extend`: `policyDigest = H(policyDigest || data)`.
+fn policy_extend(
+    crypto: &CryptoProvider,
+    hash_alg: TPM_ALG_ID,
+    accumulator: &mut Vec<u8>,
+    data: &[u8],
+) -> Result<(), TpmError> {
+    let mut buf = Vec::with_capacity(accumulator.len() + data.len());
+    buf.extend_from_slice(accumulator);
+    buf.extend_from_slice(data);
+    *accumulator = Crypto::hash(crypto, hash_alg, &buf)?;
+    Ok(())
+}
+
+/// A **single-extend** policy digest update: `policyDigest = H(policyDigest || commandCode || arg2)`.
+///
+/// This — not [`policy_update`] — is the shape of *most* policy assertions. In
+/// `TSS.CPP/Src/TpmPolicy.cpp` these are the `UpdatePolicyDigest` bodies that build a
+/// `TpmBuffer` and end in exactly one `accumulator.Extend(buf.trim())`; in
+/// `TSS.NET/TSS.Net/PolicyAces.cs` they are the ones ending in a single `.Extend(...)`, of
+/// which this function is the direct analogue of `PolicyAce.PolicyUpdate1`.
+///
+/// Assertions that use this shape: `TPM2_PolicyCommandCode`, `TPM2_PolicyPCR`,
+/// `TPM2_PolicyAuthValue`, `TPM2_PolicyPassword`, `TPM2_PolicyCpHash`,
+/// `TPM2_PolicyNameHash`, `TPM2_PolicyCounterTimer`, `TPM2_PolicyLocality`,
+/// `TPM2_PolicyDuplicationSelect`, `TPM2_PolicyNV` and `TPM2_PolicyOR` (the last two after a
+/// reset of the accumulator).
+///
+/// Routing one of these through [`policy_update`] instead adds a second extend over an empty
+/// `arg3` and produces a digest no policy session can ever satisfy.
+fn policy_update1(
+    crypto: &CryptoProvider,
+    hash_alg: TPM_ALG_ID,
+    accumulator: &mut Vec<u8>,
+    command_code: TPM_CC,
+    arg2: &[u8],
+) -> Result<(), TpmError> {
+    let mut buf = Vec::with_capacity(4 + arg2.len());
+    buf.extend_from_slice(&command_code.get_value().to_be_bytes());
+    buf.extend_from_slice(arg2);
+    policy_extend(crypto, hash_alg, accumulator, &buf)
+}
+
 /// The TPM 2.0 `PolicyUpdate()` function (Part 1, "Policy Digest Update Function").
 ///
 /// `policyDigest = H(policyDigest || commandCode || arg2)`
@@ -52,8 +95,11 @@ pub trait PolicyAssertion {
 /// policy session can ever satisfy. `TSS.CPP/Src/TpmPolicy.cpp` (`PABase::PolicyUpdate`) and
 /// `TSS.NET/TSS.Net/PolicyAces.cs` (`PolicyAce.PolicyUpdate`) both extend unconditionally.
 ///
-/// `TPM2_PolicyNV` is the one assertion that is *not* built on this function; see
-/// [`PolicyNv::update_policy_digest`].
+/// **Only four assertions are built on this function**, and they are exactly the four whose
+/// `UpdatePolicyDigest` in `TSS.CPP/Src/TpmPolicy.cpp` calls `PABase::PolicyUpdate`:
+/// `TPM2_PolicySigned`, `TPM2_PolicySecret`, `TPM2_PolicyAuthorize` (after a reset) and
+/// `TPM2_PolicyTicket` (not implemented here). Every other assertion is a single extend —
+/// use [`policy_update1`].
 fn policy_update(
     crypto: &CryptoProvider,
     hash_alg: TPM_ALG_ID,
@@ -62,19 +108,8 @@ fn policy_update(
     arg2: &[u8],
     arg3: &[u8],
 ) -> Result<(), TpmError> {
-    // First extend: H(accumulator || CC || arg2)
-    let mut buf = Vec::new();
-    buf.extend_from_slice(accumulator);
-    buf.extend_from_slice(&command_code.get_value().to_be_bytes());
-    buf.extend_from_slice(arg2);
-    *accumulator = Crypto::hash(crypto, hash_alg, &buf)?;
-
-    // Second extend: H(accumulator || arg3)
-    let mut buf2 = Vec::new();
-    buf2.extend_from_slice(accumulator);
-    buf2.extend_from_slice(arg3);
-    *accumulator = Crypto::hash(crypto, hash_alg, &buf2)?;
-    Ok(())
+    policy_update1(crypto, hash_alg, accumulator, command_code, arg2)?;
+    policy_extend(crypto, hash_alg, accumulator, arg3)
 }
 
 /// Helper to get session handle from a Session
@@ -169,9 +204,12 @@ impl PolicyAssertion for PolicyCommandCode {
         hash_alg: TPM_ALG_ID,
         acc: &mut Vec<u8>,
     ) -> Result<(), TpmError> {
+        // `PolicyCommandCode::UpdatePolicyDigest` (TpmPolicy.cpp:333) is a *single* extend:
+        //     H(policyDigest || TPM_CC_PolicyCommandCode || commandCode)
+        // It does not go through `PABase::PolicyUpdate`.
         let mut buf = Vec::new();
         buf.extend_from_slice(&self.command_code.get_value().to_be_bytes());
-        policy_update(crypto, hash_alg, acc, TPM_CC::PolicyCommandCode, &buf, &[])
+        policy_update1(crypto, hash_alg, acc, TPM_CC::PolicyCommandCode, &buf)
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -198,13 +236,16 @@ impl PolicyAssertion for PolicyLocality {
         hash_alg: TPM_ALG_ID,
         acc: &mut Vec<u8>,
     ) -> Result<(), TpmError> {
-        // PolicyLocality: H(acc || TPM_CC_PolicyLocality || locality_byte)
-        let mut buf = Vec::new();
-        buf.extend_from_slice(acc);
-        buf.extend_from_slice(&TPM_CC::PolicyLocality.get_value().to_be_bytes());
-        buf.push(self.locality.get_value());
-        *acc = Crypto::hash(crypto, hash_alg, &buf)?;
-        Ok(())
+        // `PolicyLocality::UpdatePolicyDigest` (TpmPolicy.cpp:239) is a single extend:
+        //     H(policyDigest || TPM_CC_PolicyLocality || locality)
+        // `TPMA_LOCALITY` is one byte on the wire.
+        policy_update1(
+            crypto,
+            hash_alg,
+            acc,
+            TPM_CC::PolicyLocality,
+            &[self.locality.get_value()],
+        )
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -274,7 +315,10 @@ impl PolicyAssertion for PolicyPcr {
         let mut arg2 = Vec::new();
         arg2.extend_from_slice(sel_buf.trim());
         arg2.extend_from_slice(&pcr_digest);
-        policy_update(crypto, hash_alg, acc, TPM_CC::PolicyPCR, &arg2, &[])
+        // `PolicyPcr::UpdatePolicyDigest` (TpmPolicy.cpp:312) is a *single* extend:
+        //     H(policyDigest || TPM_CC_PolicyPCR || count || selections || pcrDigest)
+        // It does not go through `PABase::PolicyUpdate`.
+        policy_update1(crypto, hash_alg, acc, TPM_CC::PolicyPCR, &arg2)
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -310,8 +354,10 @@ impl PolicyAssertion for PolicyPassword {
         hash_alg: TPM_ALG_ID,
         acc: &mut Vec<u8>,
     ) -> Result<(), TpmError> {
-        // PolicyPassword uses the same digest as PolicyAuthValue per spec
-        policy_update(crypto, hash_alg, acc, TPM_CC::PolicyAuthValue, &[], &[])
+        // `PolicyPassword::UpdatePolicyDigest` (TpmPolicy.cpp:425) is a single extend of the
+        // *PolicyAuthValue* command code and nothing else — identical to PolicyAuthValue, so
+        // that a policy can be satisfied either way. No `PABase::PolicyUpdate`.
+        policy_update1(crypto, hash_alg, acc, TPM_CC::PolicyAuthValue, &[])
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -348,7 +394,10 @@ impl PolicyAssertion for PolicyAuthValue {
         hash_alg: TPM_ALG_ID,
         acc: &mut Vec<u8>,
     ) -> Result<(), TpmError> {
-        policy_update(crypto, hash_alg, acc, TPM_CC::PolicyAuthValue, &[], &[])
+        // `PolicyAuthValue::UpdatePolicyDigest` (TpmPolicy.cpp:411) is the whole function:
+        //     accumulator.Extend(Int32ToTpm(TPM_CC::PolicyAuthValue));
+        // A single extend of the command code, with no second extend.
+        policy_update1(crypto, hash_alg, acc, TPM_CC::PolicyAuthValue, &[])
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -379,14 +428,9 @@ impl PolicyAssertion for PolicyCpHash {
         hash_alg: TPM_ALG_ID,
         acc: &mut Vec<u8>,
     ) -> Result<(), TpmError> {
-        policy_update(
-            crypto,
-            hash_alg,
-            acc,
-            TPM_CC::PolicyCpHash,
-            &self.cp_hash,
-            &[],
-        )
+        // `PolicyCpHash::UpdatePolicyDigest` (TpmPolicy.cpp:349) is a single extend:
+        //     H(policyDigest || TPM_CC_PolicyCpHash || cpHashA)
+        policy_update1(crypto, hash_alg, acc, TPM_CC::PolicyCpHash, &self.cp_hash)
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -413,13 +457,14 @@ impl PolicyAssertion for PolicyNameHash {
         hash_alg: TPM_ALG_ID,
         acc: &mut Vec<u8>,
     ) -> Result<(), TpmError> {
-        policy_update(
+        // `PolicyNameHash::UpdatePolicyDigest` (TpmPolicy.cpp:395) is a single extend:
+        //     H(policyDigest || TPM_CC_PolicyNameHash || nameHash)
+        policy_update1(
             crypto,
             hash_alg,
             acc,
             TPM_CC::PolicyNameHash,
             &self.name_hash,
-            &[],
         )
     }
 
@@ -468,14 +513,9 @@ impl PolicyAssertion for PolicyCounterTimer {
         inner.extend_from_slice(&self.offset.to_be_bytes());
         inner.extend_from_slice(&self.operation.get_value().to_be_bytes());
         let arg_hash = Crypto::hash(crypto, hash_alg, &inner)?;
-        policy_update(
-            crypto,
-            hash_alg,
-            acc,
-            TPM_CC::PolicyCounterTimer,
-            &arg_hash,
-            &[],
-        )
+        // `PolicyCounterTimer::UpdatePolicyDigest` (TpmPolicy.cpp:379) is a single extend:
+        //     H(policyDigest || TPM_CC_PolicyCounterTimer || H(operandB || offset || operation))
+        policy_update1(crypto, hash_alg, acc, TPM_CC::PolicyCounterTimer, &arg_hash)
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -520,6 +560,8 @@ impl PolicyAssertion for PolicySecret {
         hash_alg: TPM_ALG_ID,
         acc: &mut Vec<u8>,
     ) -> Result<(), TpmError> {
+        // `PolicySecret` is one of the assertions genuinely built on `PABase::PolicyUpdate`
+        // (TpmPolicy.cpp:226) — two extends, the second over `policyRef`.
         policy_update(
             crypto,
             hash_alg,
@@ -591,6 +633,8 @@ impl PolicyAssertion for PolicySigned {
         acc: &mut Vec<u8>,
     ) -> Result<(), TpmError> {
         let key_name = self.public_key.get_name(crypto)?;
+        // `PolicySigned::UpdatePolicyDigest` (TpmPolicy.cpp:462) calls `PABase::PolicyUpdate`,
+        // so this is genuinely a two-extend assertion.
         policy_update(
             crypto,
             hash_alg,
@@ -697,29 +741,25 @@ impl PolicyAssertion for PolicyNv {
         hash_alg: TPM_ALG_ID,
         acc: &mut Vec<u8>,
     ) -> Result<(), TpmError> {
-        // TPM2_PolicyNV is the exception to PolicyUpdate(): it performs exactly ONE extend,
+        // `PolicyNV::UpdatePolicyDigest` (TpmPolicy.cpp:439) is a single extend, with the
+        // Name folded into the same extend rather than into a second one:
         //
         //   policyDigest := H(policyDigest || TPM_CC_PolicyNV || args || nvIndex.Name)
         //   where args    = H(operandB || offset || operation)
         //
-        // with the Name folded into the same extend rather than into a second one. Delegating
-        // to `policy_update` with the Name as `arg3` would produce two extends and a digest no
-        // session can satisfy. See `PolicyNV::UpdatePolicyDigest` in
-        // `TSS.CPP/Src/TpmPolicy.cpp` and `TpmPolicyNV.GetPolicyDigest` in
-        // `TSS.NET/TSS.Net/PolicyAces.cs`, both of which extend once.
+        // Delegating to `policy_update` with the Name as `arg3` would produce two extends and
+        // a digest no session can satisfy. `TpmPolicyNV.GetPolicyDigest` in
+        // `TSS.NET/TSS.Net/PolicyAces.cs` extends once as well.
         let mut inner = Vec::new();
         inner.extend_from_slice(&self.operand_b);
         inner.extend_from_slice(&self.offset.to_be_bytes());
         inner.extend_from_slice(&self.operation.get_value().to_be_bytes());
         let args_hash = Crypto::hash(crypto, hash_alg, &inner)?;
 
-        let mut buf = Vec::new();
-        buf.extend_from_slice(acc);
-        buf.extend_from_slice(&TPM_CC::PolicyNV.get_value().to_be_bytes());
-        buf.extend_from_slice(&args_hash);
-        buf.extend_from_slice(&self.nv_index_name);
-        *acc = Crypto::hash(crypto, hash_alg, &buf)?;
-        Ok(())
+        let mut arg2 = Vec::new();
+        arg2.extend_from_slice(&args_hash);
+        arg2.extend_from_slice(&self.nv_index_name);
+        policy_update1(crypto, hash_alg, acc, TPM_CC::PolicyNV, &arg2)
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -760,17 +800,18 @@ impl PolicyAssertion for PolicyOr {
         hash_alg: TPM_ALG_ID,
         acc: &mut Vec<u8>,
     ) -> Result<(), TpmError> {
-        // PolicyOR: accumulator = H(0...0 || TPM_CC_PolicyOR || digest1 || digest2 || ...)
+        // `PolicyOr::UpdatePolicyDigest` (TpmPolicy.cpp:268) resets the accumulator and then
+        // performs a single extend:
+        //     policyDigest := 0...0
+        //     policyDigest := H(policyDigest || TPM_CC_PolicyOR || digest1 || digest2 || ...)
         let hash_len = Crypto::digest_size_checked(hash_alg)?;
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&vec![0u8; hash_len]); // reset to zero
-        buf.extend_from_slice(&TPM_CC::PolicyOR.get_value().to_be_bytes());
+        let mut arg2 = Vec::new();
         for branch in &self.branches {
             let branch_digest = compute_digest(crypto, branch, hash_alg)?;
-            buf.extend_from_slice(&branch_digest);
+            arg2.extend_from_slice(&branch_digest);
         }
-        *acc = Crypto::hash(crypto, hash_alg, &buf)?;
-        Ok(())
+        *acc = vec![0u8; hash_len];
+        policy_update1(crypto, hash_alg, acc, TPM_CC::PolicyOR, &arg2)
     }
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
@@ -819,7 +860,8 @@ impl PolicyAssertion for PolicyAuthorize {
         acc: &mut Vec<u8>,
     ) -> Result<(), TpmError> {
         let key_name = self.authorizing_key.get_name(crypto)?;
-        // PolicyAuthorize resets the digest, then does PolicyUpdate
+        // `PolicyAuthorize::UpdatePolicyDigest` (TpmPolicy.cpp:509) resets the accumulator and
+        // then calls `PABase::PolicyUpdate`, so this is a reset plus two extends.
         let hash_len = Crypto::digest_size_checked(hash_alg)?;
         *acc = vec![0u8; hash_len];
         policy_update(
@@ -896,13 +938,15 @@ impl PolicyAssertion for PolicyDuplicationSelect {
         }
         arg2.extend_from_slice(&self.new_parent_name);
         arg2.push(if self.include_object { 1 } else { 0 });
-        policy_update(
+        // `PolicyDuplicationSelect::UpdatePolicyDigest` (TpmPolicy.cpp:565) is a single extend:
+        //     H(policyDigest || TPM_CC_PolicyDuplicationSelect
+        //                    || [objectName] || newParentName || includeObject)
+        policy_update1(
             crypto,
             hash_alg,
             acc,
             TPM_CC::PolicyDuplicationSelect,
             &arg2,
-            &[],
         )
     }
 
@@ -928,6 +972,12 @@ mod tests {
     /// `TSS.NET/TSS.Net/PolicyAces.cs`) into a short independent script. Asserting against a
     /// value this implementation computed would only show that it agrees with itself, which is
     /// precisely the failure mode these tests exist to catch.
+    ///
+    /// Each vector must be transcribed from the `UpdatePolicyDigest` of the *matching*
+    /// assertion, not from `PABase::PolicyUpdate`. Most assertions are a single extend and only
+    /// `PolicySigned`, `PolicySecret`, `PolicyAuthorize` and `PolicyTicket` use `PolicyUpdate`;
+    /// deriving a single-extend assertion's vector from `PolicyUpdate` produces a test that
+    /// passes against a double-extending implementation a real TPM rejects.
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len())
             .step_by(2)
@@ -1069,9 +1119,14 @@ mod tests {
 
     #[test]
     fn policy_pcr_policy_digest_matches_the_cpp_reference() {
-        // `PolicyPcr::UpdatePolicyDigest` (TpmPolicy.cpp:312):
-        //     H(0^32 ‖ 0x0000017F ‖ count ‖ selections ‖ HashPcrs(values)) then Extend(empty)
-        let expected = hex("797f02987199a628dc6f8d86a79999a356bec0ecfb211ec17fdadc4b91582bd0");
+        // `PolicyPcr::UpdatePolicyDigest` (TpmPolicy.cpp:312) is a SINGLE extend:
+        //     H(0^32 ‖ 0x0000017F ‖ count ‖ selections ‖ HashPcrs(values))
+        // The previous literal here was transcribed from `PABase::PolicyUpdate`'s two-extend
+        // shape instead, so it agreed with a PolicyPCR that double-extended. A real TPM does
+        // not.
+        let expected = hex("5ac44e92d0326eb3afec6049aa2391f17693707874c2cc260541238ae3906e13");
+        // The two-extend value, i.e. the old (wrong) literal.
+        let two_extends = hex("797f02987199a628dc6f8d86a79999a356bec0ecfb211ec17fdadc4b91582bd0");
         let policy = PolicyPcr::new(two_pcr_values(), one_selection());
 
         let mut acc = zero_digest();
@@ -1079,6 +1134,7 @@ mod tests {
             .update_policy_digest(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, &mut acc)
             .unwrap();
         assert_eq!(acc, expected);
+        assert_ne!(acc, two_extends);
     }
 
     #[test]
@@ -1190,5 +1246,212 @@ mod tests {
         assert!(after_auth_value.needs_hmac);
         assert!(!after_auth_value.needs_password);
         assert!(after_auth_value.expects_response_auth());
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Item 4: every assertion uses the digest shape of its `TSS.CPP` counterpart.
+    //
+    // The regression these pin: routing a single-extend assertion through `policy_update`
+    // adds an extend over an empty `arg3`. Nothing in software notices; a real TPM produces a
+    // different `policyDigest` and every session against it fails.
+    // -----------------------------------------------------------------------------------
+
+    fn digest_of(assertion: &dyn PolicyAssertion) -> Vec<u8> {
+        let mut acc = zero_digest();
+        assertion
+            .update_policy_digest(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, &mut acc)
+            .unwrap();
+        acc
+    }
+
+    #[test]
+    fn policy_command_code_uses_a_single_extend() {
+        // `PolicyCommandCode::UpdatePolicyDigest` (TpmPolicy.cpp:333):
+        //     H(0^32 ‖ 0x0000016C ‖ 0x0000015B)      [TPM_CC_HMAC_Start]
+        // This is the digest a real TPM reported when `policy_tree_sample` caught the
+        // double-extend.
+        let expected = hex("2c9437859508d8f2905a6fc9cc50eab46f7682ce7cd2a8714f67a92bf142dc36");
+        let two_extends = hex("076e80efc2aae5ca7961d4e331bcf2cba1a84588a1502f176ce5507eb360fefa");
+
+        let acc = digest_of(&PolicyCommandCode::new(TPM_CC::HMAC_Start));
+        assert_eq!(acc, expected);
+        assert_ne!(acc, two_extends);
+    }
+
+    #[test]
+    fn policy_auth_value_and_policy_password_share_one_single_extend_digest() {
+        // `PolicyAuthValue::UpdatePolicyDigest` (TpmPolicy.cpp:411) and
+        // `PolicyPassword::UpdatePolicyDigest` (:425) are both, in their entirety,
+        //     accumulator.Extend(Int32ToTpm(TPM_CC::PolicyAuthValue));
+        // i.e. H(0^32 ‖ 0x0000016B). PolicyPassword deliberately uses the PolicyAuthValue
+        // command code so one policy can be satisfied either way.
+        let expected = hex("8fcd2169ab92694e0c633f1ab772842b8241bbc20288981fc7ac1eddc1fddb0e");
+        let two_extends = hex("202ca3645e334dfdf79bf341aca5451a735037951d4f532794059870c597e64c");
+
+        let auth_value = digest_of(&PolicyAuthValue::new());
+        let password = digest_of(&PolicyPassword::new());
+        assert_eq!(auth_value, expected);
+        assert_eq!(password, expected);
+        assert_ne!(auth_value, two_extends);
+    }
+
+    #[test]
+    fn policy_cp_hash_uses_a_single_extend() {
+        // `PolicyCpHash::UpdatePolicyDigest` (TpmPolicy.cpp:349):
+        //     H(0^32 ‖ 0x0000016E ‖ cpHashA)
+        let expected = hex("52dc88a57fccbb92568bed93ff793b1c7a4fff0f20af825a9d1b06f903b0d87f");
+        let cp_hash: Vec<u8> = (0x10u8..0x30).collect();
+        assert_eq!(digest_of(&PolicyCpHash::new(cp_hash)), expected);
+    }
+
+    #[test]
+    fn policy_name_hash_uses_a_single_extend() {
+        // `PolicyNameHash::UpdatePolicyDigest` (TpmPolicy.cpp:395):
+        //     H(0^32 ‖ 0x00000170 ‖ nameHash)
+        let expected = hex("0b20d273d44c8f5ecd30dfe8cf4f441bc069f9b5daada74d94506b4d7bafbfc0");
+        let name_hash: Vec<u8> = (0x40u8..0x60).collect();
+        assert_eq!(digest_of(&PolicyNameHash::new(name_hash)), expected);
+    }
+
+    #[test]
+    fn policy_counter_timer_uses_a_single_extend() {
+        // `PolicyCounterTimer::UpdatePolicyDigest` (TpmPolicy.cpp:379):
+        //     H(0^32 ‖ 0x0000016D ‖ H(operandB ‖ offset ‖ operation))
+        let expected = hex("8ac1c2b12b4ea0df1c08b7b20d6199cee877e25fe29af227124b3f77d8ce89f2");
+        let policy = PolicyCounterTimer::from_u64(1234, 8, TPM_EO::UNSIGNED_GT);
+        assert_eq!(digest_of(&policy), expected);
+    }
+
+    #[test]
+    fn policy_locality_uses_a_single_extend() {
+        // `PolicyLocality::UpdatePolicyDigest` (TpmPolicy.cpp:239):
+        //     H(0^32 ‖ 0x0000016F ‖ 0x01)     - TPMA_LOCALITY is one byte on the wire.
+        let expected = hex("ddee6af14bf3c4e8127ced87bcf9a57e1c0c8ddb5e67735c8505f96f07b8dbb8");
+        assert_eq!(
+            digest_of(&PolicyLocality::new(TPMA_LOCALITY::LOC_ZERO)),
+            expected
+        );
+    }
+
+    #[test]
+    fn policy_duplication_select_uses_a_single_extend() {
+        // `PolicyDuplicationSelect::UpdatePolicyDigest` (TpmPolicy.cpp:565):
+        //     H(0^32 ‖ 0x00000188 ‖ [objectName] ‖ newParentName ‖ includeObject)
+        // The object Name is in the digest only when includeObject is set; the flag byte is
+        // always there.
+        let obj_name: Vec<u8> = [0x00u8, 0x0B].iter().copied().chain(0x80u8..0xA0).collect();
+        let parent_name: Vec<u8> = [0x00u8, 0x0B].iter().copied().chain(0xA0u8..0xC0).collect();
+
+        let with_object = hex("8947e4ab30b2738ba1ce93e886fa290c7184867f5a1d600d28dacbcf81a91320");
+        let without_object =
+            hex("10dbd0e9ac9f6f4170dac0ea69df9e7667c7b6becb0dee8097a6f79f95b59fa6");
+
+        assert_eq!(
+            digest_of(&PolicyDuplicationSelect::new(
+                obj_name.clone(),
+                parent_name.clone(),
+                true
+            )),
+            with_object
+        );
+        assert_eq!(
+            digest_of(&PolicyDuplicationSelect::new(obj_name, parent_name, false)),
+            without_object
+        );
+    }
+
+    #[test]
+    fn policy_or_resets_the_accumulator_then_single_extends() {
+        // `PolicyOr::UpdatePolicyDigest` (TpmPolicy.cpp:268):
+        //     accumulator.Reset(); accumulator.Extend(0x00000171 ‖ digest1 ‖ digest2)
+        // with each branch digest computed from its own zero accumulator.
+        let expected = hex("8adcb4e659bf6cd70a892987b08fc8e021be1c8c390d99940d209dfdae62b4ed");
+
+        let branches: Vec<Vec<Box<dyn PolicyAssertion>>> = vec![
+            vec![Box::new(PolicyCommandCode::new(TPM_CC::HMAC_Start))],
+            vec![Box::new(PolicyCommandCode::new(TPM_CC::Sign))],
+        ];
+        let policy = PolicyOr::new(branches);
+        assert_eq!(digest_of(&policy), expected);
+
+        // The Reset() is load-bearing: whatever came before must be discarded.
+        let mut acc = vec![0xFFu8; 32];
+        policy
+            .update_policy_digest(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, &mut acc)
+            .unwrap();
+        assert_eq!(acc, expected);
+    }
+
+    #[test]
+    fn policy_tree_chains_assertions_in_the_order_they_were_added() {
+        // Two single-extend assertions in sequence:
+        //     H(H(0^32 ‖ 0x0000016F ‖ 0x01) ‖ 0x0000016C ‖ 0x0000015D)
+        // This is the `PolicyLocality` + `PolicyCommandCode(Sign)` chain that
+        // `policy_tree_sample` checks against a TPM trial session.
+        let expected = hex("13e423a4dc7783a2f2f858ee32b576011e7f9f2111ead871bc10da2258a4b969");
+        let tree = PolicyTree::new()
+            .add(PolicyLocality::new(TPMA_LOCALITY::LOC_ZERO))
+            .add(PolicyCommandCode::new(TPM_CC::Sign));
+        assert_eq!(
+            tree.get_policy_digest(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256)
+                .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn policy_authorize_resets_the_accumulator_then_uses_policy_update() {
+        // `PolicyAuthorize::UpdatePolicyDigest` (TpmPolicy.cpp:509) is
+        //     accumulator.Reset();
+        //     PolicyUpdate(accumulator, TPM_CC::PolicyAuthorize, key.GetName(), PolicyRef);
+        // so it is one of the four genuine two-extend assertions, preceded by a reset. The key
+        // Name is an input here, not a value under test; the shape is what is asserted.
+        let parameters = TPMU_PUBLIC_PARMS::keyedHashDetail(TPMS_KEYEDHASH_PARMS::new(&Some(
+            TPMU_SCHEME_KEYEDHASH::hmac(TPMS_SCHEME_HMAC {
+                hashAlg: TPM_ALG_ID::SHA256,
+            }),
+        )));
+        let key = TPMT_PUBLIC::new(
+            TPM_ALG_ID::SHA256,
+            TPMA_OBJECT::sign | TPMA_OBJECT::userWithAuth,
+            &vec![],
+            &Some(parameters),
+            &Some(TPMU_PUBLIC_ID::keyedHash(TPM2B_DIGEST_KEYEDHASH::default())),
+        );
+        let policy_ref = b"reference".to_vec();
+        let policy = PolicyAuthorize::new(
+            vec![0x11u8; 32],
+            policy_ref.clone(),
+            key.clone(),
+            TPMT_SIGNATURE::default(),
+        );
+
+        let name = key.get_name(&SOFTWARE_PROVIDER).unwrap();
+        let first = Crypto::hash(
+            &SOFTWARE_PROVIDER,
+            TPM_ALG_ID::SHA256,
+            &[
+                zero_digest().as_slice(),
+                &TPM_CC::PolicyAuthorize.get_value().to_be_bytes(),
+                name.as_slice(),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let expected = Crypto::hash(
+            &SOFTWARE_PROVIDER,
+            TPM_ALG_ID::SHA256,
+            &[first.as_slice(), policy_ref.as_slice()].concat(),
+        )
+        .unwrap();
+
+        assert_eq!(digest_of(&policy), expected);
+
+        // Reset: a non-zero starting accumulator must not change the result.
+        let mut acc = vec![0x5Au8; 32];
+        policy
+            .update_policy_digest(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, &mut acc)
+            .unwrap();
+        assert_eq!(acc, expected);
     }
 }

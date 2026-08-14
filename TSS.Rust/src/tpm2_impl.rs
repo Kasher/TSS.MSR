@@ -735,7 +735,8 @@ impl Tpm2 {
     /// # Salting
     ///
     /// Pass `Some((handle, public))` to salt the session. The salt is generated here, at the
-    /// session hash's digest size, and encrypted to `public` — which the caller supplies as a
+    /// digest size of the salt key's `nameAlg` — the size the TPM requires — and encrypted to
+    /// `public`, which the caller supplies as a
     /// [`TrustedPublic`], having already decided that this public area is the one it means.
     ///
     /// This function deliberately does **not** call `TPM2_ReadPublic` on the salt key. Doing so
@@ -768,11 +769,14 @@ impl Tpm2 {
         let null_handle = TPM_HANDLE::new(TPM_RH::NULL.get_value());
         let (tpm_key, salt, encrypted_salt) = match salt_key {
             Some((handle, trusted)) => {
-                // The salt is what makes the session key unpredictable, so it is sized to the
-                // session hash rather than left to the caller to get right.
+                // The salt must be exactly the digest size of the salt key's *nameAlg*, not of
+                // the session hash. The TPM recovers the salt with OAEP under the key's nameAlg
+                // and then rejects anything whose length does not match that digest size
+                // (TPM_RC_VALUE on `encryptedSalt`), so a SHA-256 session salted to a SHA-1 key
+                // fails outright if the session hash is used to size it.
                 let salt = Zeroizing::new(Crypto::get_random(
                     &self.crypto,
-                    Crypto::digest_size_checked(auth_hash)?,
+                    Crypto::digest_size_checked(trusted.public().nameAlg)?,
                 )?);
                 let encrypted = trusted.public().encrypt_session_salt(&self.crypto, &salt)?;
                 (handle.clone(), salt, encrypted)
@@ -2109,9 +2113,9 @@ mod hardware_tests {
             | TPMA_OBJECT::userWithAuth;
         let parameters = TPMU_PUBLIC_PARMS::rsaDetail(TPMS_RSA_PARMS::new(
             &TPMT_SYM_DEF_OBJECT::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
-            &Some(TPMU_ASYM_SCHEME::rsassa(TPMS_SIG_SCHEME_RSASSA {
-                hashAlg: TPM_ALG_ID::NULL,
-            })),
+            // A restricted decryption key must carry the NULL asymmetric scheme; an RSASSA
+            // scheme here is rejected by the TPM.
+            &Some(TPMU_ASYM_SCHEME::null(TPMS_NULL_ASYM_SCHEME::default())),
             2048,
             65537,
         ));
@@ -2259,7 +2263,9 @@ mod hardware_tests {
     #[ignore = "requires a local TPM"]
     fn hardware_policy_pcr_session_round_trip() {
         let mut tpm = open_tpm();
-        let selection = TPMS_PCR_SELECTION::new(TPM_ALG_ID::SHA256, &vec![0u8]);
+        // `pcrSelect` is a bitmap and must be at least PCR_SELECT_MIN (3) bytes; a one-byte,
+        // all-zero selection both undersizes the field and names no PCR at all.
+        let selection = TPMS_PCR_SELECTION::new_from_pcr_u32(TPM_ALG_ID::SHA256, 0);
         let read = tpm.PCR_Read(&vec![selection.clone()]).unwrap();
 
         let tree = PolicyTree::new().add(PolicyPcr::new(read.pcrValues.clone(), vec![selection]));
