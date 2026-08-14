@@ -105,7 +105,9 @@ namespace CodeGen
         public static string ClassMember => (Cpp || Rust) ? "::" : ".";
 
         public static string AsReference(bool isConst) => Rust ? (isConst ? ".as_ref()" : ".as_mut()") : "";
-        public static string UnionMember(bool isConst) => Rust ? AsReference(isConst) + ".unwrap()." : Member;
+        // In Rust a union field is an Option<>, and an absent value must be reported as an error
+        // rather than panicking. All the marshaling methods return Result<(), TpmError>.
+        public static string UnionMember(bool isConst) => Rust ? AsReference(isConst) + ".ok_or(TpmError::InvalidUnion)?." : Member;
         public static string Member => Cpp ? "->" : ".";
         public static string Null => _null;
         public static string Neg => Py ? "not " : "!";

@@ -9617,8 +9617,8 @@ impl TpmStructure for TPMS_CAPABILITY_DATA {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         if (self.data.is_none()) { return Ok(()) };
-        buf.writeInt(self.data.as_ref().unwrap().GetUnionSelector().into());
-        self.data.as_ref().unwrap().toTpm(buf)?;
+        buf.writeInt(self.data.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.data.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -9626,7 +9626,7 @@ impl TpmStructure for TPMS_CAPABILITY_DATA {
         // Deserialize fields
         let r#capability: TPM_CAP = TPM_CAP(buf.readInt() as u32);
         self.data = TPMU_CAPABILITIES::create(r#capability)?;
-        self.data.as_mut().unwrap().initFromTpm(buf)?;
+        self.data.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -10347,12 +10347,12 @@ impl TpmStructure for TPMS_ATTEST {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeInt(self.magic.into());
-        buf.writeShort(self.attested.as_ref().unwrap().GetUnionSelector().into());
+        buf.writeShort(self.attested.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         buf.writeSizedByteBuf(&self.qualifiedSigner, 2);
         buf.writeSizedByteBuf(&self.extraData, 2);
         self.clockInfo.toTpm(buf)?;
         buf.writeInt64(self.firmwareVersion as u64);
-        self.attested.as_ref().unwrap().toTpm(buf)?;
+        self.attested.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -10365,7 +10365,7 @@ impl TpmStructure for TPMS_ATTEST {
         self.clockInfo.initFromTpm(buf)?;
         self.firmwareVersion = buf.readInt64() as u64;
         self.attested = TPMU_ATTEST::create(r#type)?;
-        self.attested.as_mut().unwrap().initFromTpm(buf)?;
+        self.attested.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -11716,8 +11716,8 @@ impl TpmStructure for TPMT_KEYEDHASH_SCHEME {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         if (self.details.is_none()) { return Ok(()) };
-        buf.writeShort(self.details.as_ref().unwrap().GetUnionSelector().into());
-        self.details.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.details.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.details.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -11725,7 +11725,7 @@ impl TpmStructure for TPMT_KEYEDHASH_SCHEME {
         // Deserialize fields
         let r#scheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.details = TPMU_SCHEME_KEYEDHASH::create(r#scheme)?;
-        self.details.as_mut().unwrap().initFromTpm(buf)?;
+        self.details.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -12092,8 +12092,8 @@ impl TpmStructure for TPMT_SIG_SCHEME {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         if (self.details.is_none()) { return Ok(()) };
-        buf.writeShort(self.details.as_ref().unwrap().GetUnionSelector().into());
-        self.details.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.details.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.details.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -12101,7 +12101,7 @@ impl TpmStructure for TPMT_SIG_SCHEME {
         // Deserialize fields
         let r#scheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.details = TPMU_SIG_SCHEME::create(r#scheme)?;
-        self.details.as_mut().unwrap().initFromTpm(buf)?;
+        self.details.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -12545,8 +12545,8 @@ impl TpmStructure for TPMT_KDF_SCHEME {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         if (self.details.is_none()) { return Ok(()) };
-        buf.writeShort(self.details.as_ref().unwrap().GetUnionSelector().into());
-        self.details.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.details.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.details.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -12554,7 +12554,7 @@ impl TpmStructure for TPMT_KDF_SCHEME {
         // Deserialize fields
         let r#scheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.details = TPMU_KDF_SCHEME::create(r#scheme)?;
-        self.details.as_mut().unwrap().initFromTpm(buf)?;
+        self.details.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -12647,8 +12647,8 @@ impl TpmStructure for TPMT_ASYM_SCHEME {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         if (self.details.is_none()) { return Ok(()) };
-        buf.writeShort(self.details.as_ref().unwrap().GetUnionSelector().into());
-        self.details.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.details.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.details.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -12656,7 +12656,7 @@ impl TpmStructure for TPMT_ASYM_SCHEME {
         // Deserialize fields
         let r#scheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.details = TPMU_ASYM_SCHEME::create(r#scheme)?;
-        self.details.as_mut().unwrap().initFromTpm(buf)?;
+        self.details.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -12707,8 +12707,8 @@ impl TpmStructure for TPMT_RSA_SCHEME {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         if (self.details.is_none()) { return Ok(()) };
-        buf.writeShort(self.details.as_ref().unwrap().GetUnionSelector().into());
-        self.details.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.details.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.details.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -12716,7 +12716,7 @@ impl TpmStructure for TPMT_RSA_SCHEME {
         // Deserialize fields
         let r#scheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.details = TPMU_ASYM_SCHEME::create(r#scheme)?;
-        self.details.as_mut().unwrap().initFromTpm(buf)?;
+        self.details.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -12767,8 +12767,8 @@ impl TpmStructure for TPMT_RSA_DECRYPT {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         if (self.details.is_none()) { return Ok(()) };
-        buf.writeShort(self.details.as_ref().unwrap().GetUnionSelector().into());
-        self.details.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.details.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.details.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -12776,7 +12776,7 @@ impl TpmStructure for TPMT_RSA_DECRYPT {
         // Deserialize fields
         let r#scheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.details = TPMU_ASYM_SCHEME::create(r#scheme)?;
-        self.details.as_mut().unwrap().initFromTpm(buf)?;
+        self.details.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -13096,8 +13096,8 @@ impl TpmStructure for TPMT_ECC_SCHEME {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         if (self.details.is_none()) { return Ok(()) };
-        buf.writeShort(self.details.as_ref().unwrap().GetUnionSelector().into());
-        self.details.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.details.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.details.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -13105,7 +13105,7 @@ impl TpmStructure for TPMT_ECC_SCHEME {
         // Deserialize fields
         let r#scheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.details = TPMU_ASYM_SCHEME::create(r#scheme)?;
-        self.details.as_mut().unwrap().initFromTpm(buf)?;
+        self.details.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -13213,10 +13213,10 @@ impl TpmStructure for TPMS_ALGORITHM_DETAIL_ECC {
         // Serialize fields
         buf.writeShort(self.curveID.into());
         buf.writeShort(self.keySize as u16);
-        buf.writeShort(self.kdf.as_ref().unwrap().GetUnionSelector().into());
-        self.kdf.as_ref().unwrap().toTpm(buf)?;
-        buf.writeShort(self.sign.as_ref().unwrap().GetUnionSelector().into());
-        self.sign.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.kdf.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.kdf.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
+        buf.writeShort(self.sign.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.sign.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         buf.writeSizedByteBuf(&self.p, 2);
         buf.writeSizedByteBuf(&self.a, 2);
         buf.writeSizedByteBuf(&self.b, 2);
@@ -13233,10 +13233,10 @@ impl TpmStructure for TPMS_ALGORITHM_DETAIL_ECC {
         self.keySize = buf.readShort() as u16;
         let r#kdfScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.kdf = TPMU_KDF_SCHEME::create(r#kdfScheme)?;
-        self.kdf.as_mut().unwrap().initFromTpm(buf)?;
+        self.kdf.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         let r#signScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.sign = TPMU_ASYM_SCHEME::create(r#signScheme)?;
-        self.sign.as_mut().unwrap().initFromTpm(buf)?;
+        self.sign.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         self.p = buf.readSizedByteBuf(2);
         self.a = buf.readSizedByteBuf(2);
         self.b = buf.readSizedByteBuf(2);
@@ -13768,8 +13768,8 @@ impl TpmStructure for TPMT_SIGNATURE {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         if (self.signature.is_none()) { return Ok(()) };
-        buf.writeShort(self.signature.as_ref().unwrap().GetUnionSelector().into());
-        self.signature.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -13777,7 +13777,7 @@ impl TpmStructure for TPMT_SIGNATURE {
         // Deserialize fields
         let r#sigAlg: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.signature = TPMU_SIGNATURE::create(r#sigAlg)?;
-        self.signature.as_mut().unwrap().initFromTpm(buf)?;
+        self.signature.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -13881,8 +13881,8 @@ impl TpmStructure for TPMS_KEYEDHASH_PARMS {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         if (self.scheme.is_none()) { return Ok(()) };
-        buf.writeShort(self.scheme.as_ref().unwrap().GetUnionSelector().into());
-        self.scheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.scheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.scheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -13890,7 +13890,7 @@ impl TpmStructure for TPMS_KEYEDHASH_PARMS {
         // Deserialize fields
         let r#schemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.scheme = TPMU_SCHEME_KEYEDHASH::create(r#schemeScheme)?;
-        self.scheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.scheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -13956,8 +13956,8 @@ impl TpmStructure for TPMS_ASYM_PARMS {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         self.symmetric.toTpm(buf)?;
-        buf.writeShort(self.scheme.as_ref().unwrap().GetUnionSelector().into());
-        self.scheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.scheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.scheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -13966,7 +13966,7 @@ impl TpmStructure for TPMS_ASYM_PARMS {
         self.symmetric.initFromTpm(buf)?;
         let r#schemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.scheme = TPMU_ASYM_SCHEME::create(r#schemeScheme)?;
-        self.scheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.scheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -14049,8 +14049,8 @@ impl TpmStructure for TPMS_RSA_PARMS {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         self.symmetric.toTpm(buf)?;
-        buf.writeShort(self.scheme.as_ref().unwrap().GetUnionSelector().into());
-        self.scheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.scheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.scheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         buf.writeShort(self.keyBits as u16);
         buf.writeInt(self.exponent as u32);
         Ok(())
@@ -14061,7 +14061,7 @@ impl TpmStructure for TPMS_RSA_PARMS {
         self.symmetric.initFromTpm(buf)?;
         let r#schemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.scheme = TPMU_ASYM_SCHEME::create(r#schemeScheme)?;
-        self.scheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.scheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         self.keyBits = buf.readShort() as u16;
         self.exponent = buf.readInt() as u32;
         Ok(())
@@ -14147,11 +14147,11 @@ impl TpmStructure for TPMS_ECC_PARMS {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         self.symmetric.toTpm(buf)?;
-        buf.writeShort(self.scheme.as_ref().unwrap().GetUnionSelector().into());
-        self.scheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.scheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.scheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         buf.writeShort(self.curveID.into());
-        buf.writeShort(self.kdf.as_ref().unwrap().GetUnionSelector().into());
-        self.kdf.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.kdf.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.kdf.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -14160,11 +14160,11 @@ impl TpmStructure for TPMS_ECC_PARMS {
         self.symmetric.initFromTpm(buf)?;
         let r#schemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.scheme = TPMU_ASYM_SCHEME::create(r#schemeScheme)?;
-        self.scheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.scheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         self.curveID = TPM_ECC_CURVE(buf.readShort() as u16);
         let r#kdfScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.kdf = TPMU_KDF_SCHEME::create(r#kdfScheme)?;
-        self.kdf.as_mut().unwrap().initFromTpm(buf)?;
+        self.kdf.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -14214,8 +14214,8 @@ impl TpmStructure for TPMT_PUBLIC_PARMS {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         if (self.parameters.is_none()) { return Ok(()) };
-        buf.writeShort(self.parameters.as_ref().unwrap().GetUnionSelector().into());
-        self.parameters.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.parameters.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.parameters.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -14223,7 +14223,7 @@ impl TpmStructure for TPMT_PUBLIC_PARMS {
         // Deserialize fields
         let r#type: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.parameters = TPMU_PUBLIC_PARMS::create(r#type)?;
-        self.parameters.as_mut().unwrap().initFromTpm(buf)?;
+        self.parameters.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -14301,12 +14301,12 @@ impl TpmStructure for TPMT_PUBLIC {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         if (self.parameters.is_none()) { return Ok(()) };
-        buf.writeShort(self.parameters.as_ref().unwrap().GetUnionSelector().into());
+        buf.writeShort(self.parameters.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         buf.writeShort(self.nameAlg.into());
         buf.writeInt(self.objectAttributes.into());
         buf.writeSizedByteBuf(&self.authPolicy, 2);
-        self.parameters.as_ref().unwrap().toTpm(buf)?;
-        self.unique.as_ref().unwrap().toTpm(buf)?;
+        self.parameters.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
+        self.unique.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -14317,9 +14317,9 @@ impl TpmStructure for TPMT_PUBLIC {
         self.objectAttributes = TPMA_OBJECT(buf.readInt() as u32);
         self.authPolicy = buf.readSizedByteBuf(2);
         self.parameters = TPMU_PUBLIC_PARMS::create(r#type)?;
-        self.parameters.as_mut().unwrap().initFromTpm(buf)?;
+        self.parameters.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         self.unique = TPMU_PUBLIC_ID::create(r#type)?;
-        self.unique.as_mut().unwrap().initFromTpm(buf)?;
+        self.unique.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -14541,10 +14541,10 @@ impl TpmStructure for TPMT_SENSITIVE {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         if (self.sensitive.is_none()) { return Ok(()) };
-        buf.writeShort(self.sensitive.as_ref().unwrap().GetUnionSelector().into());
+        buf.writeShort(self.sensitive.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         buf.writeSizedByteBuf(&self.authValue, 2);
         buf.writeSizedByteBuf(&self.seedValue, 2);
-        self.sensitive.as_ref().unwrap().toTpm(buf)?;
+        self.sensitive.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -14554,7 +14554,7 @@ impl TpmStructure for TPMT_SENSITIVE {
         self.authValue = buf.readSizedByteBuf(2);
         self.seedValue = buf.readSizedByteBuf(2);
         self.sensitive = TPMU_SENSITIVE_COMPOSITE::create(r#sensitiveType)?;
-        self.sensitive.as_mut().unwrap().initFromTpm(buf)?;
+        self.sensitive.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -17969,8 +17969,8 @@ impl TpmStructure for TPM2_RSA_Encrypt_REQUEST {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedByteBuf(&self.message, 2);
-        buf.writeShort(self.inScheme.as_ref().unwrap().GetUnionSelector().into());
-        self.inScheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         buf.writeSizedByteBuf(&self.label, 2);
         Ok(())
     }
@@ -17980,7 +17980,7 @@ impl TpmStructure for TPM2_RSA_Encrypt_REQUEST {
         self.message = buf.readSizedByteBuf(2);
         let r#inSchemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.inScheme = TPMU_ASYM_SCHEME::create(r#inSchemeScheme)?;
-        self.inScheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.inScheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         self.label = buf.readSizedByteBuf(2);
         Ok(())
     }
@@ -18119,8 +18119,8 @@ impl TpmStructure for TPM2_RSA_Decrypt_REQUEST {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedByteBuf(&self.cipherText, 2);
-        buf.writeShort(self.inScheme.as_ref().unwrap().GetUnionSelector().into());
-        self.inScheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         buf.writeSizedByteBuf(&self.label, 2);
         Ok(())
     }
@@ -18130,7 +18130,7 @@ impl TpmStructure for TPM2_RSA_Decrypt_REQUEST {
         self.cipherText = buf.readSizedByteBuf(2);
         let r#inSchemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.inScheme = TPMU_ASYM_SCHEME::create(r#inSchemeScheme)?;
-        self.inScheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.inScheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         self.label = buf.readSizedByteBuf(2);
         Ok(())
     }
@@ -18775,8 +18775,8 @@ impl TpmStructure for TPM2_ECC_Encrypt_REQUEST {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedByteBuf(&self.plainText, 2);
-        buf.writeShort(self.inScheme.as_ref().unwrap().GetUnionSelector().into());
-        self.inScheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -18785,7 +18785,7 @@ impl TpmStructure for TPM2_ECC_Encrypt_REQUEST {
         self.plainText = buf.readSizedByteBuf(2);
         let r#inSchemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.inScheme = TPMU_KDF_SCHEME::create(r#inSchemeScheme)?;
-        self.inScheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.inScheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -18933,8 +18933,8 @@ impl TpmStructure for TPM2_ECC_Decrypt_REQUEST {
         buf.writeSizedObj(&self.C1)?;
         buf.writeSizedByteBuf(&self.C2, 2);
         buf.writeSizedByteBuf(&self.C3, 2);
-        buf.writeShort(self.inScheme.as_ref().unwrap().GetUnionSelector().into());
-        self.inScheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -18945,7 +18945,7 @@ impl TpmStructure for TPM2_ECC_Decrypt_REQUEST {
         self.C3 = buf.readSizedByteBuf(2);
         let r#inSchemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.inScheme = TPMU_KDF_SCHEME::create(r#inSchemeScheme)?;
-        self.inScheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.inScheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -20700,8 +20700,8 @@ impl TpmStructure for TPM2_Certify_REQUEST {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedByteBuf(&self.qualifyingData, 2);
-        buf.writeShort(self.inScheme.as_ref().unwrap().GetUnionSelector().into());
-        self.inScheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -20710,7 +20710,7 @@ impl TpmStructure for TPM2_Certify_REQUEST {
         self.qualifyingData = buf.readSizedByteBuf(2);
         let r#inSchemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.inScheme = TPMU_SIG_SCHEME::create(r#inSchemeScheme)?;
-        self.inScheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.inScheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -20769,8 +20769,8 @@ impl TpmStructure for CertifyResponse {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedObj(&self.certifyInfo)?;
-        buf.writeShort(self.signature.as_ref().unwrap().GetUnionSelector().into());
-        self.signature.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -20779,7 +20779,7 @@ impl TpmStructure for CertifyResponse {
         buf.readSizedObj(&mut self.certifyInfo)?;
         let r#signatureSigAlg: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.signature = TPMU_SIGNATURE::create(r#signatureSigAlg)?;
-        self.signature.as_mut().unwrap().initFromTpm(buf)?;
+        self.signature.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -20875,8 +20875,8 @@ impl TpmStructure for TPM2_CertifyCreation_REQUEST {
         // Serialize fields
         buf.writeSizedByteBuf(&self.qualifyingData, 2);
         buf.writeSizedByteBuf(&self.creationHash, 2);
-        buf.writeShort(self.inScheme.as_ref().unwrap().GetUnionSelector().into());
-        self.inScheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         self.creationTicket.toTpm(buf)?;
         Ok(())
     }
@@ -20887,7 +20887,7 @@ impl TpmStructure for TPM2_CertifyCreation_REQUEST {
         self.creationHash = buf.readSizedByteBuf(2);
         let r#inSchemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.inScheme = TPMU_SIG_SCHEME::create(r#inSchemeScheme)?;
-        self.inScheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.inScheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         self.creationTicket.initFromTpm(buf)?;
         Ok(())
     }
@@ -20946,8 +20946,8 @@ impl TpmStructure for CertifyCreationResponse {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedObj(&self.certifyInfo)?;
-        buf.writeShort(self.signature.as_ref().unwrap().GetUnionSelector().into());
-        self.signature.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -20956,7 +20956,7 @@ impl TpmStructure for CertifyCreationResponse {
         buf.readSizedObj(&mut self.certifyInfo)?;
         let r#signatureSigAlg: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.signature = TPMU_SIGNATURE::create(r#signatureSigAlg)?;
-        self.signature.as_mut().unwrap().initFromTpm(buf)?;
+        self.signature.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -21036,8 +21036,8 @@ impl TpmStructure for TPM2_Quote_REQUEST {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedByteBuf(&self.qualifyingData, 2);
-        buf.writeShort(self.inScheme.as_ref().unwrap().GetUnionSelector().into());
-        self.inScheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         buf.writeObjArr(self.PCRselect.as_ref())?;
         Ok(())
     }
@@ -21047,7 +21047,7 @@ impl TpmStructure for TPM2_Quote_REQUEST {
         self.qualifyingData = buf.readSizedByteBuf(2);
         let r#inSchemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.inScheme = TPMU_SIG_SCHEME::create(r#inSchemeScheme)?;
-        self.inScheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.inScheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         buf.readObjArr(self.PCRselect.as_mut())?;
         Ok(())
     }
@@ -21103,8 +21103,8 @@ impl TpmStructure for QuoteResponse {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedObj(&self.quoted)?;
-        buf.writeShort(self.signature.as_ref().unwrap().GetUnionSelector().into());
-        self.signature.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -21113,7 +21113,7 @@ impl TpmStructure for QuoteResponse {
         buf.readSizedObj(&mut self.quoted)?;
         let r#signatureSigAlg: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.signature = TPMU_SIGNATURE::create(r#signatureSigAlg)?;
-        self.signature.as_mut().unwrap().initFromTpm(buf)?;
+        self.signature.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -21203,8 +21203,8 @@ impl TpmStructure for TPM2_GetSessionAuditDigest_REQUEST {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedByteBuf(&self.qualifyingData, 2);
-        buf.writeShort(self.inScheme.as_ref().unwrap().GetUnionSelector().into());
-        self.inScheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -21213,7 +21213,7 @@ impl TpmStructure for TPM2_GetSessionAuditDigest_REQUEST {
         self.qualifyingData = buf.readSizedByteBuf(2);
         let r#inSchemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.inScheme = TPMU_SIG_SCHEME::create(r#inSchemeScheme)?;
-        self.inScheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.inScheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -21268,8 +21268,8 @@ impl TpmStructure for GetSessionAuditDigestResponse {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedObj(&self.auditInfo)?;
-        buf.writeShort(self.signature.as_ref().unwrap().GetUnionSelector().into());
-        self.signature.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -21278,7 +21278,7 @@ impl TpmStructure for GetSessionAuditDigestResponse {
         buf.readSizedObj(&mut self.auditInfo)?;
         let r#signatureSigAlg: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.signature = TPMU_SIGNATURE::create(r#signatureSigAlg)?;
-        self.signature.as_mut().unwrap().initFromTpm(buf)?;
+        self.signature.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -21363,8 +21363,8 @@ impl TpmStructure for TPM2_GetCommandAuditDigest_REQUEST {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedByteBuf(&self.qualifyingData, 2);
-        buf.writeShort(self.inScheme.as_ref().unwrap().GetUnionSelector().into());
-        self.inScheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -21373,7 +21373,7 @@ impl TpmStructure for TPM2_GetCommandAuditDigest_REQUEST {
         self.qualifyingData = buf.readSizedByteBuf(2);
         let r#inSchemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.inScheme = TPMU_SIG_SCHEME::create(r#inSchemeScheme)?;
-        self.inScheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.inScheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -21430,8 +21430,8 @@ impl TpmStructure for GetCommandAuditDigestResponse {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedObj(&self.auditInfo)?;
-        buf.writeShort(self.signature.as_ref().unwrap().GetUnionSelector().into());
-        self.signature.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -21440,7 +21440,7 @@ impl TpmStructure for GetCommandAuditDigestResponse {
         buf.readSizedObj(&mut self.auditInfo)?;
         let r#signatureSigAlg: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.signature = TPMU_SIGNATURE::create(r#signatureSigAlg)?;
-        self.signature.as_mut().unwrap().initFromTpm(buf)?;
+        self.signature.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -21523,8 +21523,8 @@ impl TpmStructure for TPM2_GetTime_REQUEST {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedByteBuf(&self.qualifyingData, 2);
-        buf.writeShort(self.inScheme.as_ref().unwrap().GetUnionSelector().into());
-        self.inScheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -21533,7 +21533,7 @@ impl TpmStructure for TPM2_GetTime_REQUEST {
         self.qualifyingData = buf.readSizedByteBuf(2);
         let r#inSchemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.inScheme = TPMU_SIG_SCHEME::create(r#inSchemeScheme)?;
-        self.inScheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.inScheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -21588,8 +21588,8 @@ impl TpmStructure for GetTimeResponse {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedObj(&self.timeInfo)?;
-        buf.writeShort(self.signature.as_ref().unwrap().GetUnionSelector().into());
-        self.signature.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -21598,7 +21598,7 @@ impl TpmStructure for GetTimeResponse {
         buf.readSizedObj(&mut self.timeInfo)?;
         let r#signatureSigAlg: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.signature = TPMU_SIGNATURE::create(r#signatureSigAlg)?;
-        self.signature.as_mut().unwrap().initFromTpm(buf)?;
+        self.signature.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -21691,8 +21691,8 @@ impl TpmStructure for TPM2_CertifyX509_REQUEST {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedByteBuf(&self.reserved, 2);
-        buf.writeShort(self.inScheme.as_ref().unwrap().GetUnionSelector().into());
-        self.inScheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         buf.writeSizedByteBuf(&self.partialCertificate, 2);
         Ok(())
     }
@@ -21702,7 +21702,7 @@ impl TpmStructure for TPM2_CertifyX509_REQUEST {
         self.reserved = buf.readSizedByteBuf(2);
         let r#inSchemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.inScheme = TPMU_SIG_SCHEME::create(r#inSchemeScheme)?;
-        self.inScheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.inScheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         self.partialCertificate = buf.readSizedByteBuf(2);
         Ok(())
     }
@@ -21768,8 +21768,8 @@ impl TpmStructure for CertifyX509Response {
         // Serialize fields
         buf.writeSizedByteBuf(&self.addedToCertificate, 2);
         buf.writeSizedByteBuf(&self.tbsDigest, 2);
-        buf.writeShort(self.signature.as_ref().unwrap().GetUnionSelector().into());
-        self.signature.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -21779,7 +21779,7 @@ impl TpmStructure for CertifyX509Response {
         self.tbsDigest = buf.readSizedByteBuf(2);
         let r#signatureSigAlg: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.signature = TPMU_SIGNATURE::create(r#signatureSigAlg)?;
-        self.signature.as_mut().unwrap().initFromTpm(buf)?;
+        self.signature.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -22129,8 +22129,8 @@ impl TpmStructure for TPM2_VerifySignature_REQUEST {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedByteBuf(&self.digest, 2);
-        buf.writeShort(self.signature.as_ref().unwrap().GetUnionSelector().into());
-        self.signature.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -22139,7 +22139,7 @@ impl TpmStructure for TPM2_VerifySignature_REQUEST {
         self.digest = buf.readSizedByteBuf(2);
         let r#signatureSigAlg: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.signature = TPMU_SIGNATURE::create(r#signatureSigAlg)?;
-        self.signature.as_mut().unwrap().initFromTpm(buf)?;
+        self.signature.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -22273,8 +22273,8 @@ impl TpmStructure for TPM2_Sign_REQUEST {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedByteBuf(&self.digest, 2);
-        buf.writeShort(self.inScheme.as_ref().unwrap().GetUnionSelector().into());
-        self.inScheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         self.validation.toTpm(buf)?;
         Ok(())
     }
@@ -22284,7 +22284,7 @@ impl TpmStructure for TPM2_Sign_REQUEST {
         self.digest = buf.readSizedByteBuf(2);
         let r#inSchemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.inScheme = TPMU_SIG_SCHEME::create(r#inSchemeScheme)?;
-        self.inScheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.inScheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         self.validation.initFromTpm(buf)?;
         Ok(())
     }
@@ -22338,8 +22338,8 @@ impl TpmStructure for SignResponse {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         if (self.signature.is_none()) { return Ok(()) };
-        buf.writeShort(self.signature.as_ref().unwrap().GetUnionSelector().into());
-        self.signature.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -22347,7 +22347,7 @@ impl TpmStructure for SignResponse {
         // Deserialize fields
         let r#signatureSigAlg: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.signature = TPMU_SIGNATURE::create(r#signatureSigAlg)?;
-        self.signature.as_mut().unwrap().initFromTpm(buf)?;
+        self.signature.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -23214,8 +23214,8 @@ impl TpmStructure for TPM2_PolicySigned_REQUEST {
         buf.writeSizedByteBuf(&self.cpHashA, 2);
         buf.writeSizedByteBuf(&self.policyRef, 2);
         buf.writeInt(self.expiration as u32);
-        buf.writeShort(self.auth.as_ref().unwrap().GetUnionSelector().into());
-        self.auth.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.auth.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.auth.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -23227,7 +23227,7 @@ impl TpmStructure for TPM2_PolicySigned_REQUEST {
         self.expiration = buf.readInt() as i32;
         let r#authSigAlg: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.auth = TPMU_SIGNATURE::create(r#authSigAlg)?;
-        self.auth.as_mut().unwrap().initFromTpm(buf)?;
+        self.auth.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -25921,8 +25921,8 @@ impl TpmStructure for TPM2_FieldUpgradeStart_REQUEST {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedByteBuf(&self.fuDigest, 2);
-        buf.writeShort(self.manifestSignature.as_ref().unwrap().GetUnionSelector().into());
-        self.manifestSignature.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.manifestSignature.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.manifestSignature.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -25931,7 +25931,7 @@ impl TpmStructure for TPM2_FieldUpgradeStart_REQUEST {
         self.fuDigest = buf.readSizedByteBuf(2);
         let r#manifestSignatureSigAlg: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.manifestSignature = TPMU_SIGNATURE::create(r#manifestSignatureSigAlg)?;
-        self.manifestSignature.as_mut().unwrap().initFromTpm(buf)?;
+        self.manifestSignature.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -26910,8 +26910,8 @@ impl TpmStructure for GetCapabilityResponse {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeByte(self.moreData as u8);
-        buf.writeInt(self.capabilityData.as_ref().unwrap().GetUnionSelector().into());
-        self.capabilityData.as_ref().unwrap().toTpm(buf)?;
+        buf.writeInt(self.capabilityData.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.capabilityData.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -26920,7 +26920,7 @@ impl TpmStructure for GetCapabilityResponse {
         self.moreData = buf.readByte() as u8;
         let r#capabilityDataCapability: TPM_CAP = TPM_CAP(buf.readInt() as u32);
         self.capabilityData = TPMU_CAPABILITIES::create(r#capabilityDataCapability)?;
-        self.capabilityData.as_mut().unwrap().initFromTpm(buf)?;
+        self.capabilityData.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -26981,8 +26981,8 @@ impl TpmStructure for TPM2_TestParms_REQUEST {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         if (self.parameters.is_none()) { return Ok(()) };
-        buf.writeShort(self.parameters.as_ref().unwrap().GetUnionSelector().into());
-        self.parameters.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.parameters.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.parameters.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -26990,7 +26990,7 @@ impl TpmStructure for TPM2_TestParms_REQUEST {
         // Deserialize fields
         let r#parametersType: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.parameters = TPMU_PUBLIC_PARMS::create(r#parametersType)?;
-        self.parameters.as_mut().unwrap().initFromTpm(buf)?;
+        self.parameters.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
@@ -28150,8 +28150,8 @@ impl TpmStructure for TPM2_NV_Certify_REQUEST {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedByteBuf(&self.qualifyingData, 2);
-        buf.writeShort(self.inScheme.as_ref().unwrap().GetUnionSelector().into());
-        self.inScheme.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.inScheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         buf.writeShort(self.size as u16);
         buf.writeShort(self.offset as u16);
         Ok(())
@@ -28162,7 +28162,7 @@ impl TpmStructure for TPM2_NV_Certify_REQUEST {
         self.qualifyingData = buf.readSizedByteBuf(2);
         let r#inSchemeScheme: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.inScheme = TPMU_SIG_SCHEME::create(r#inSchemeScheme)?;
-        self.inScheme.as_mut().unwrap().initFromTpm(buf)?;
+        self.inScheme.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         self.size = buf.readShort() as u16;
         self.offset = buf.readShort() as u16;
         Ok(())
@@ -28220,8 +28220,8 @@ impl TpmStructure for NV_CertifyResponse {
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
         buf.writeSizedObj(&self.certifyInfo)?;
-        buf.writeShort(self.signature.as_ref().unwrap().GetUnionSelector().into());
-        self.signature.as_ref().unwrap().toTpm(buf)?;
+        buf.writeShort(self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
+        self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
     }
 
@@ -28230,7 +28230,7 @@ impl TpmStructure for NV_CertifyResponse {
         buf.readSizedObj(&mut self.certifyInfo)?;
         let r#signatureSigAlg: TPM_ALG_ID = TPM_ALG_ID(buf.readShort() as u16);
         self.signature = TPMU_SIGNATURE::create(r#signatureSigAlg)?;
-        self.signature.as_mut().unwrap().initFromTpm(buf)?;
+        self.signature.as_mut().ok_or(TpmError::InvalidUnion)?.initFromTpm(buf)?;
         Ok(())
     }
 
