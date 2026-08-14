@@ -552,7 +552,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tss-rust"
+name = "tss-msr-rs"
 version = "0.1.0"
 dependencies = [
  "aes",

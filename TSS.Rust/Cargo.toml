@@ -1,7 +1,17 @@
 [package]
-name = "tss-rust"
+name = "tss-msr-rs"
 version = "0.1.0"
 edition = "2021"
+# The repository's LICENSE file has always said MIT; stating it here as well is what lets a
+# consumer determine it mechanically. Tooling that audits dependency licences reads the manifest,
+# not the file, so without this line the crate is reported as unlicensed and a consumer whose
+# policy forbids that cannot take the dependency at all.
+license = "MIT"
+description = "A TPM 2.0 Software Stack (TSS) implementation for Rust."
+# Points at the fork because that is where this code actually lives. The upstream TSS.MSR carries
+# C, C++, Java, JavaScript, .NET and Python bindings but no Rust one, so there is as yet no
+# upstream home to name here. Update this if that changes.
+repository = "https://github.com/Kasher/TSS.MSR"
 
 [lints.rust]
 non_camel_case_types = "allow"
