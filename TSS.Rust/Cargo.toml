@@ -1,5 +1,5 @@
 [package]
-name = "tss-rust"
+name = "tss-msr-rs"
 version = "0.1.0"
 edition = "2021"
 # The repository's LICENSE file has always said MIT; stating it here as well is what lets a

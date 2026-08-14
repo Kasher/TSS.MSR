@@ -1,4 +1,4 @@
-﻿//! TSS.Rust sample suite.
+//! TSS.Rust sample suite.
 //!
 //! # This suite mutates TPM state
 //!
@@ -28,7 +28,7 @@
 //! and compare output as a set. The crate's unit tests are the reliable signal.
 
 use std::io::{self, Write};
-use tss_rust::{
+use tss_msr_rs::{
     auth_session::Session,
     crypto::{software_provider::SOFTWARE_PROVIDER, Crypto},
     device::{TpmDevice, TpmTbsDevice}, error::TpmError,
