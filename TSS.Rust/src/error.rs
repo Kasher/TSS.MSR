@@ -39,6 +39,9 @@ pub enum TpmError {
     /// Operation not supported
     NotSupported(String),
 
+    /// A cryptographic or structural check on attacker-reachable data did not pass
+    VerificationFailed(String),
+
     /// TPM device not connected
     NotConnected,
 
@@ -86,6 +89,7 @@ impl fmt::Display for TpmError {
             Self::DeviceError(msg) => write!(f, "Device error: {}", msg),
             Self::GenericError(msg) => write!(f, "TPM error: {}", msg),
             Self::NotSupported(operation) => write!(f, "Operation not supported: {}", operation),
+            Self::VerificationFailed(reason) => write!(f, "Verification failed: {}", reason),
             Self::NotConnected => write!(f, "TPM device not connected"),
             Self::BadEndTag => write!(f, "Bad end tag received from TPM"),
             Self::CommandFailed => write!(f, "TPM command failed"),

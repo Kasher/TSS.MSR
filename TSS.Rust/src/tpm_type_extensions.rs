@@ -5,6 +5,7 @@ use crate::tpm_buffer::*;
 use crate::tpm_structure::TpmEnum;
 use crate::tpm_types::CertifyResponse;
 use crate::tpm_types::*;
+use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
 /// Activation data returned from create_activation
@@ -75,6 +76,52 @@ impl TrustedPublic {
         Ok(Self { public, name })
     }
 
+    /// Accept `public` on the strength of a credential a TPM could only have recovered by
+    /// holding the named object.
+    ///
+    /// This is the `TPM2_MakeCredential` / `TPM2_ActivateCredential` exchange: a credential of
+    /// the caller's choosing is encrypted to a storage key's public area — an endorsement key,
+    /// normally — naming the object evidence is wanted for, and the TPM returns the credential
+    /// only if it holds both that storage key and an object with that Name.
+    ///
+    /// `activated_name` is the Name given to [`TPMT_PUBLIC::create_activation`], and
+    /// `recovered_credential` is what `TPM2_ActivateCredential` returned. Two things are
+    /// checked: that `public` really is the public area of the object the credential was bound
+    /// to, and that the credential came back intact. The first catches the easy mistake of
+    /// naming one object and then trusting another's public area.
+    ///
+    /// What the result is worth rests on two things this function cannot see and the caller must
+    /// get right:
+    ///
+    /// * **the storage key's own provenance.** Credential activation moves trust from the
+    ///   storage key to the named object; it does not create any. If the endorsement key's
+    ///   public area was itself taken on faith, so is everything derived here. Chain it to a
+    ///   manufacturer's EK certificate.
+    /// * **the credential's unpredictability.** Anyone who can guess it can answer without a
+    ///   TPM, so use bytes freshly generated at random for this one exchange.
+    pub fn from_activated_credential(
+        public: TPMT_PUBLIC,
+        activated_name: &[u8],
+        credential: &[u8],
+        recovered_credential: &[u8],
+        crypto: &CryptoProvider,
+    ) -> Result<Self, TpmError> {
+        if credential.is_empty() {
+            return Err(TpmError::InvalidParameter);
+        }
+
+        // Compared in constant time: the caller supplies the credential, and the TPM's answer
+        // arrives from wherever the TPM is. Neither should be able to be recovered a byte at a
+        // time by an adversary who can submit answers and watch how long the rejection takes.
+        if !bool::from(credential.ct_eq(recovered_credential)) {
+            return Err(TpmError::VerificationFailed(
+                "Activation did not recover the credential it was made from".to_string(),
+            ));
+        }
+
+        Self::from_pinned_name(public, activated_name, crypto)
+    }
+
     /// The public area.
     pub fn public(&self) -> &TPMT_PUBLIC {
         &self.public
@@ -83,6 +130,163 @@ impl TrustedPublic {
     /// The Name derived from the public area, `nameAlg || H_nameAlg(publicArea)`.
     pub fn name(&self) -> &[u8] {
         &self.name
+    }
+
+    /// Check a `TPM2_Certify` attestation this key signed over `certified_key`.
+    ///
+    /// # The signing key's provenance is a precondition, not a result
+    ///
+    /// The caller is responsible for establishing out of band that this signing key is the key
+    /// it means, **before** calling this function. The two usual ways are credential activation
+    /// against an endorsement key whose certificate chains to a manufacturer root — see
+    /// [`TrustedPublic::from_activated_credential`] — and validating an attestation key
+    /// certificate issued by a CA the caller already trusts, pinning the Name it carries with
+    /// [`TrustedPublic::from_pinned_name`].
+    ///
+    /// Nothing here substitutes for that. Every value this function inspects reaches it from
+    /// the same untrusted source: the attestation, the signature, and the signing key's own
+    /// `objectAttributes` all travel together, so an adversary who fabricates a public area and
+    /// an attestation to match satisfies all of these checks at once. This function does not
+    /// authenticate a channel, does not defeat an adversary sitting on one, and does not show
+    /// that the private half of the signing key lives in a TPM — let alone in the TPM you
+    /// believe you are talking to.
+    ///
+    /// What it does establish, *given* that provenance: the key you already decided to trust
+    /// signed this attestation, the attestation is bound to `nonce`, and it names
+    /// `certified_key`. A zero-length `nonce` is accepted and carries no freshness — supply
+    /// bytes you generated at random for this exchange if replay is a concern.
+    ///
+    /// # What is checked
+    ///
+    /// * the signing key's attributes are fit for attestation (defense in depth — see
+    ///   [`TrustedPublic::check_attestation_key_attributes`]);
+    /// * `magic` is `TPM_GENERATED_VALUE`;
+    /// * `extraData` is `nonce`;
+    /// * the attested body is a `certify`, and the Name it carries is `certified_key`'s;
+    /// * the signature's hash algorithm is the one the signing key's scheme names;
+    /// * the signature verifies over the marshalled attestation.
+    ///
+    /// Every failure is an `Err`: [`TpmError::VerificationFailed`] when a check did not pass and
+    /// [`TpmError::NotSupported`] when the signature uses an algorithm this crate cannot verify.
+    /// There is no success value to drop, so no caller can mistake a failed check for a pass.
+    pub fn validate_certify(
+        &self,
+        crypto: &CryptoProvider,
+        certified_key: &TPMT_PUBLIC,
+        nonce: &[u8],
+        certify_response: &CertifyResponse,
+    ) -> Result<(), TpmError> {
+        self.check_attestation_key_attributes()?;
+
+        let attest = &certify_response.certifyInfo;
+
+        // Everything from here to the algorithm dispatch below is deliberately hoisted above it.
+        // These are the checks that give an attestation its meaning, and they are defined on the
+        // attestation alone, so no signature algorithm has any business reaching a success path
+        // without them. An earlier version dispatched first and delegated the non-RSASSA case to
+        // the signature verifier with an empty digest, which skipped all of them; it was not
+        // exploitable only because that verifier happened to reject the same cases for its own
+        // reasons. Keep the order: structure first, then cryptography.
+        if attest.magic != TPM_GENERATED::VALUE {
+            return Err(TpmError::VerificationFailed(format!(
+                "Certify: magic is 0x{:X}, not TPM_GENERATED_VALUE",
+                attest.magic.0
+            )));
+        }
+
+        if attest.extraData != nonce {
+            return Err(TpmError::VerificationFailed(
+                "Certify: extraData does not carry the nonce supplied".to_string(),
+            ));
+        }
+
+        let Some(TPMU_ATTEST::certify(certify_info)) = &attest.attested else {
+            return Err(TpmError::VerificationFailed(
+                "Certify: the attested body is not a TPMS_CERTIFY_INFO".to_string(),
+            ));
+        };
+
+        if certify_info.name != certified_key.get_name(crypto)? {
+            return Err(TpmError::VerificationFailed(
+                "Certify: the attestation names a different object than the key supplied"
+                    .to_string(),
+            ));
+        }
+
+        let Some(TPMU_SIGNATURE::rsassa(signature)) = &certify_response.signature else {
+            return Err(TpmError::NotSupported(
+                "Certify: only RSASSA signatures can be validated".to_string(),
+            ));
+        };
+
+        if self.public.get_signing_hash_alg()? != signature.hash {
+            return Err(TpmError::VerificationFailed(
+                "Certify: the signature's hash algorithm is not the one the key's scheme names"
+                    .to_string(),
+            ));
+        }
+
+        let signed_blob = {
+            let mut buffer = TpmBuffer::new(None);
+            attest.toTpm(&mut buffer)?;
+            buffer.trim().to_vec()
+        };
+        let signed_blob_hash = Crypto::hash(crypto, signature.hash, &signed_blob)?;
+
+        if !Crypto::validate_signature(
+            crypto,
+            &self.public,
+            signed_blob_hash,
+            &certify_response.signature,
+        )? {
+            return Err(TpmError::VerificationFailed(
+                "Certify: the signature over the attestation is invalid".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Reject a signing key whose attributes make an attestation it signs worthless.
+    ///
+    /// **Defense in depth, and nothing more.** `objectAttributes` sits in the same public area
+    /// as everything else the caller was handed, so an adversary who fabricates a public area
+    /// simply sets these bits. Reading them proves nothing about provenance and cannot stand in
+    /// for establishing it. These checks are meaningful only once the key's provenance has been
+    /// settled out of band, and what they then catch is an honest mistake: a key that genuinely
+    /// is the one that was pinned, but created from a template unfit for attestation.
+    ///
+    /// * `restricted` is the load-bearing one, because it is what gives the
+    ///   `magic == TPM_GENERATED_VALUE` check any content. A TPM will not produce the hash
+    ///   validation ticket that `TPM2_Sign` demands of a restricted key when the data hashed
+    ///   begins with `TPM_GENERATED_VALUE` (TPM 2.0 Part 3, `TPM2_Hash` and
+    ///   `TPM2_SequenceComplete`), so a restricted key signs no externally supplied structure
+    ///   that could be mistaken for an attestation. An **unrestricted** key signs anything put
+    ///   in front of it, hand-written `TPMS_ATTEST` included, and the magic check becomes a
+    ///   check that the attacker remembered a constant.
+    /// * `sign` because a key without it is not a signing key at all.
+    /// * `fixedTPM` and `fixedParent` are what a TPM sets on a key that cannot be duplicated out
+    ///   of its hierarchy. Requiring them rejects a key whose private half may lawfully have
+    ///   been copied elsewhere — which would make an attestation say nothing about *which*
+    ///   TPM produced it. Like the rest, this is the public area's own claim about itself.
+    pub fn check_attestation_key_attributes(&self) -> Result<(), TpmError> {
+        let attributes = self.public.objectAttributes;
+
+        for (required, name) in [
+            (TPMA_OBJECT::restricted, "restricted"),
+            (TPMA_OBJECT::sign, "sign"),
+            (TPMA_OBJECT::fixedTPM, "fixedTPM"),
+            (TPMA_OBJECT::fixedParent, "fixedParent"),
+        ] {
+            if attributes.0 & required.0 == 0 {
+                return Err(TpmError::VerificationFailed(format!(
+                    "Certify: the signing key does not have {} set, so it is unfit to attest",
+                    name
+                )));
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -157,59 +361,6 @@ impl TPMT_PUBLIC {
         };
 
         Ok(scheme.hashAlg)
-    }
-
-    pub fn validate_certify(
-        &self,
-        crypto: &CryptoProvider,
-        certified_key: &TPMT_PUBLIC,
-        nonce: &[u8],
-        certify_response: &CertifyResponse,
-    ) -> Result<bool, TpmError> {
-        let key_hash_alg = self.get_signing_hash_alg()?;
-        let signature_hash_alg =
-            if let Some(TPMU_SIGNATURE::rsassa(signature)) = &certify_response.signature {
-                signature.hash
-            } else {
-                return Crypto::validate_signature(
-                    crypto,
-                    self,
-                    Vec::new(),
-                    &certify_response.signature,
-                );
-            };
-        if key_hash_alg != signature_hash_alg {
-            return Ok(false);
-        }
-
-        let attest = &certify_response.certifyInfo;
-
-        if (attest.extraData != nonce) {
-            return Ok(false);
-        }
-
-        if (attest.magic != TPM_GENERATED::VALUE) {
-            return Ok(false);
-        }
-
-        if let Some(TPMU_ATTEST::certify(quote_info)) = &attest.attested {
-            if (quote_info.name != certified_key.get_name(crypto)?) {
-                return Ok(false);
-            }
-        } else {
-            return Ok(false);
-        }
-
-        // And finally, check the signature
-        let signed_blob = {
-            let mut buffer = TpmBuffer::new(None);
-            certify_response.certifyInfo.toTpm(&mut buffer)?;
-            buffer.trim().to_vec()
-        };
-
-        let signed_blob_hash = Crypto::hash(crypto, signature_hash_alg, &signed_blob)?;
-
-        Crypto::validate_signature(crypto, self, signed_blob_hash, &certify_response.signature)
     }
 
     /// Implements the TPM2_MakeCredential command functionality:
@@ -1246,6 +1397,354 @@ mod tests {
                 &activated_name(TPM_ALG_ID::SHA256)
             )
             .is_err());
+
+        Ok(())
+    }
+
+    /// The attributes a TPM gives a key created to sign attestations.
+    const ATTESTATION_ATTRIBUTES: TPMA_OBJECT = TPMA_OBJECT(
+        TPMA_OBJECT::restricted.0
+            | TPMA_OBJECT::sign.0
+            | TPMA_OBJECT::fixedTPM.0
+            | TPMA_OBJECT::fixedParent.0
+            | TPMA_OBJECT::sensitiveDataOrigin.0
+            | TPMA_OBJECT::userWithAuth.0,
+    );
+
+    /// The public area of an RSASSA-SHA256 signing key, with `attributes` and `modulus`.
+    ///
+    /// Nothing but the genuine-certification test needs the modulus to be a real one: every
+    /// other check `validate_certify` makes is defined on the attestation or on the attributes,
+    /// so filler bytes keep those tests off the key generator.
+    fn signing_key_public(attributes: TPMA_OBJECT, modulus: Vec<u8>) -> TPMT_PUBLIC {
+        TPMT_PUBLIC {
+            nameAlg: TPM_ALG_ID::SHA256,
+            objectAttributes: attributes,
+            parameters: Some(TPMU_PUBLIC_PARMS::rsaDetail(TPMS_RSA_PARMS::new(
+                &TPMT_SYM_DEF_OBJECT::default(),
+                &Some(TPMU_ASYM_SCHEME::rsassa(TPMS_SIG_SCHEME_RSASSA {
+                    hashAlg: TPM_ALG_ID::SHA256,
+                })),
+                2048,
+                65537,
+            ))),
+            unique: Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA {
+                buffer: modulus,
+            })),
+            ..Default::default()
+        }
+    }
+
+    /// An attestation key whose private half this test can actually sign with.
+    fn attestation_key() -> Result<TSS_KEY, TpmError> {
+        let mut key = TSS_KEY {
+            publicPart: signing_key_public(ATTESTATION_ATTRIBUTES, Vec::new()),
+            ..Default::default()
+        };
+        key.create_key(&SOFTWARE_PROVIDER)?;
+        Ok(key)
+    }
+
+    /// The public area of the object being certified. Its contents are immaterial: only its Name
+    /// is compared, and that is derived from whatever is here.
+    fn certified_key_public() -> TPMT_PUBLIC {
+        signing_key_public(
+            TPMA_OBJECT::sign | TPMA_OBJECT::fixedParent,
+            vec![0x11; 256],
+        )
+    }
+
+    /// A well formed `TPMS_ATTEST` of a certify, as a TPM would produce it.
+    fn certify_attestation(
+        certified_key: &TPMT_PUBLIC,
+        nonce: &[u8],
+    ) -> Result<TPMS_ATTEST, TpmError> {
+        Ok(TPMS_ATTEST {
+            magic: TPM_GENERATED::VALUE,
+            qualifiedSigner: vec![0x0a; 34],
+            extraData: nonce.to_vec(),
+            clockInfo: TPMS_CLOCK_INFO::new(1234, 5, 6, 1),
+            firmwareVersion: 0x2024_0101,
+            attested: Some(TPMU_ATTEST::certify(TPMS_CERTIFY_INFO {
+                name: certified_key.get_name(&SOFTWARE_PROVIDER)?,
+                qualifiedName: vec![0x0b; 34],
+            })),
+        })
+    }
+
+    /// Sign an attestation the way a TPM signs one, with RSASSA over its marshalled form.
+    fn sign_attestation(key: &TSS_KEY, attest: &TPMS_ATTEST) -> Result<CertifyResponse, TpmError> {
+        let mut buffer = TpmBuffer::new(None);
+        attest.toTpm(&mut buffer)?;
+        let digest = Crypto::hash(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, buffer.trim())?;
+        let signature = key.sign(&SOFTWARE_PROVIDER, &digest, TPM_ALG_ID::SHA256)?;
+
+        Ok(CertifyResponse {
+            certifyInfo: attest.clone(),
+            signature: signature.signature,
+        })
+    }
+
+    /// A signature in an algorithm this crate cannot verify.
+    ///
+    /// Pairing one with an otherwise flawed attestation is what shows that the checks on the
+    /// attestation run before the signature algorithm is dispatched on: if any of them could be
+    /// reached only through the RSASSA arm, these tests would report `NotSupported` instead.
+    fn unverifiable_signature() -> Option<TPMU_SIGNATURE> {
+        Some(TPMU_SIGNATURE::ecdsa(TPMS_SIGNATURE_ECDSA {
+            hash: TPM_ALG_ID::SHA256,
+            signatureR: vec![0x03; 32],
+            signatureS: vec![0x04; 32],
+        }))
+    }
+
+    /// The signing key as `validate_certify` wants it. These tests build the public area
+    /// themselves, so there is no channel to distrust and nothing to pin against.
+    fn trusted(public: TPMT_PUBLIC) -> Result<TrustedPublic, TpmError> {
+        TrustedPublic::assume_trusted(public, &SOFTWARE_PROVIDER)
+    }
+
+    fn assert_verification_failed(error: TpmError) {
+        assert!(
+            matches!(error, TpmError::VerificationFailed(_)),
+            "expected a verification failure, got {error}"
+        );
+    }
+
+    #[test]
+    fn validate_certify_accepts_a_genuine_certification() -> Result<(), TpmError> {
+        let key = attestation_key()?;
+        let certified_key = certified_key_public();
+        let nonce = vec![9, 8, 7, 6, 5];
+        let response = sign_attestation(&key, &certify_attestation(&certified_key, &nonce)?)?;
+
+        trusted(key.publicPart.clone())?.validate_certify(
+            &SOFTWARE_PROVIDER,
+            &certified_key,
+            &nonce,
+            &response,
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn validate_certify_rejects_a_signature_over_something_else() -> Result<(), TpmError> {
+        let key = attestation_key()?;
+        let certified_key = certified_key_public();
+        let nonce = vec![9, 8, 7, 6, 5];
+        let mut response = sign_attestation(&key, &certify_attestation(&certified_key, &nonce)?)?;
+
+        // A field the checks above the signature do not look at, so only the signature can catch
+        // it: the attestation now differs from the one that was signed.
+        response.certifyInfo.firmwareVersion += 1;
+
+        let error = trusted(key.publicPart.clone())?
+            .validate_certify(&SOFTWARE_PROVIDER, &certified_key, &nonce, &response)
+            .expect_err("a signature over a different attestation must not verify");
+        assert_verification_failed(error);
+
+        Ok(())
+    }
+
+    #[test]
+    fn validate_certify_rejects_an_unrestricted_signing_key() -> Result<(), TpmError> {
+        // Everything else about this attestation is genuine, so each attribute is the only
+        // reason left for the rejection.
+        let key = attestation_key()?;
+        let certified_key = certified_key_public();
+        let nonce = vec![4, 4, 2];
+        let response = sign_attestation(&key, &certify_attestation(&certified_key, &nonce)?)?;
+
+        for missing in [
+            TPMA_OBJECT::restricted,
+            TPMA_OBJECT::sign,
+            TPMA_OBJECT::fixedTPM,
+            TPMA_OBJECT::fixedParent,
+        ] {
+            let mut public = key.publicPart.clone();
+            public.objectAttributes = TPMA_OBJECT(public.objectAttributes.0 & !missing.0);
+
+            let error = trusted(public)?
+                .validate_certify(&SOFTWARE_PROVIDER, &certified_key, &nonce, &response)
+                .expect_err("a signing key unfit to attest must be rejected");
+            assert_verification_failed(error);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn validate_certify_rejects_a_non_rsassa_signature() -> Result<(), TpmError> {
+        let signing_key = signing_key_public(ATTESTATION_ATTRIBUTES, vec![0xcd; 256]);
+        let certified_key = certified_key_public();
+        let nonce = vec![1, 2, 3];
+
+        // Nothing else is wrong with this attestation: the only thing standing between it and a
+        // success is the signature algorithm.
+        let response = CertifyResponse {
+            certifyInfo: certify_attestation(&certified_key, &nonce)?,
+            signature: unverifiable_signature(),
+        };
+
+        let error = trusted(signing_key)?
+            .validate_certify(&SOFTWARE_PROVIDER, &certified_key, &nonce, &response)
+            .expect_err("a signature this crate cannot verify must not reach a success path");
+        assert!(
+            matches!(error, TpmError::NotSupported(_)),
+            "expected NotSupported, got {error}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn validate_certify_rejects_a_forged_magic_value() -> Result<(), TpmError> {
+        let signing_key = signing_key_public(ATTESTATION_ATTRIBUTES, vec![0xcd; 256]);
+        let certified_key = certified_key_public();
+        let nonce = vec![1, 2, 3];
+
+        let mut attest = certify_attestation(&certified_key, &nonce)?;
+        attest.magic = TPM_GENERATED(0);
+
+        let response = CertifyResponse {
+            certifyInfo: attest,
+            signature: unverifiable_signature(),
+        };
+
+        let error = trusted(signing_key)?
+            .validate_certify(&SOFTWARE_PROVIDER, &certified_key, &nonce, &response)
+            .expect_err("an attestation without TPM_GENERATED_VALUE must be rejected");
+        assert_verification_failed(error);
+
+        Ok(())
+    }
+
+    #[test]
+    fn validate_certify_rejects_a_mismatched_nonce() -> Result<(), TpmError> {
+        let signing_key = signing_key_public(ATTESTATION_ATTRIBUTES, vec![0xcd; 256]);
+        let certified_key = certified_key_public();
+
+        let response = CertifyResponse {
+            certifyInfo: certify_attestation(&certified_key, &[1, 2, 3])?,
+            signature: unverifiable_signature(),
+        };
+
+        let error = trusted(signing_key)?
+            .validate_certify(&SOFTWARE_PROVIDER, &certified_key, &[1, 2, 4], &response)
+            .expect_err("an attestation carrying another nonce must be rejected");
+        assert_verification_failed(error);
+
+        Ok(())
+    }
+
+    #[test]
+    fn validate_certify_rejects_a_mismatched_certified_key_name() -> Result<(), TpmError> {
+        let signing_key = signing_key_public(ATTESTATION_ATTRIBUTES, vec![0xcd; 256]);
+        let certified_key = certified_key_public();
+        let nonce = vec![1, 2, 3];
+
+        let response = CertifyResponse {
+            certifyInfo: certify_attestation(&certified_key, &nonce)?,
+            signature: unverifiable_signature(),
+        };
+
+        let another_key = signing_key_public(TPMA_OBJECT::sign, vec![0x22; 256]);
+
+        let error = trusted(signing_key)?
+            .validate_certify(&SOFTWARE_PROVIDER, &another_key, &nonce, &response)
+            .expect_err("an attestation naming another object must be rejected");
+        assert_verification_failed(error);
+
+        Ok(())
+    }
+
+    #[test]
+    fn validate_certify_rejects_an_attestation_that_is_not_a_certify() -> Result<(), TpmError> {
+        let signing_key = signing_key_public(ATTESTATION_ATTRIBUTES, vec![0xcd; 256]);
+        let certified_key = certified_key_public();
+        let nonce = vec![1, 2, 3];
+
+        let mut attest = certify_attestation(&certified_key, &nonce)?;
+        attest.attested = Some(TPMU_ATTEST::quote(TPMS_QUOTE_INFO {
+            pcrSelect: Vec::new(),
+            pcrDigest: vec![0x05; 32],
+        }));
+
+        let response = CertifyResponse {
+            certifyInfo: attest,
+            signature: unverifiable_signature(),
+        };
+
+        let error = trusted(signing_key)?
+            .validate_certify(&SOFTWARE_PROVIDER, &certified_key, &nonce, &response)
+            .expect_err("an attestation of another kind must be rejected");
+        assert_verification_failed(error);
+
+        Ok(())
+    }
+
+    #[test]
+    fn validate_certify_rejects_a_signature_hash_the_key_scheme_does_not_name(
+    ) -> Result<(), TpmError> {
+        let signing_key = signing_key_public(ATTESTATION_ATTRIBUTES, vec![0xcd; 256]);
+        let certified_key = certified_key_public();
+        let nonce = vec![1, 2, 3];
+
+        // The key's scheme is RSASSA-SHA256, so a SHA-1 signature is not one it makes.
+        let response = CertifyResponse {
+            certifyInfo: certify_attestation(&certified_key, &nonce)?,
+            signature: Some(TPMU_SIGNATURE::rsassa(TPMS_SIGNATURE_RSASSA {
+                hash: TPM_ALG_ID::SHA1,
+                sig: vec![0x06; 256],
+            })),
+        };
+
+        let error = trusted(signing_key)?
+            .validate_certify(&SOFTWARE_PROVIDER, &certified_key, &nonce, &response)
+            .expect_err("a signature hash the key's scheme does not name must be rejected");
+        assert_verification_failed(error);
+
+        Ok(())
+    }
+
+    #[test]
+    fn from_activated_credential_rejects_what_the_activation_did_not_prove() -> Result<(), TpmError>
+    {
+        let public = certified_key_public();
+        let name = public.get_name(&SOFTWARE_PROVIDER)?;
+        let credential = vec![0x5a; 20];
+
+        // The credential the TPM returned is the one that was made for this Name.
+        let trusted = TrustedPublic::from_activated_credential(
+            public.clone(),
+            &name,
+            &credential,
+            &credential,
+            &SOFTWARE_PROVIDER,
+        )?;
+        assert_eq!(trusted.name(), name.as_slice());
+
+        // A TPM that could not recover the credential proves nothing.
+        assert!(TrustedPublic::from_activated_credential(
+            public.clone(),
+            &name,
+            &credential,
+            &[0x5b; 20],
+            &SOFTWARE_PROVIDER
+        )
+        .is_err());
+
+        // Naming one object and then trusting another's public area proves nothing either.
+        let another_key = signing_key_public(TPMA_OBJECT::sign, vec![0x22; 256]);
+        assert!(TrustedPublic::from_activated_credential(
+            another_key,
+            &name,
+            &credential,
+            &credential,
+            &SOFTWARE_PROVIDER
+        )
+        .is_err());
 
         Ok(())
     }

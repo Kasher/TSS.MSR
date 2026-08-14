@@ -278,11 +278,19 @@ fn attestation(tpm: &mut Tpm2) -> Result<(), TpmError> {
         return Err(TpmError::InvalidParameter);
     } ;
 
-    // Get a key attestation.  For simplicity we have the signingKey self-certify b
+    // Get a key attestation. The key that signs the attestation and the key being attested must
+    // be different: a key certifying itself says only that whoever produced the public area also
+    // produced the attestation over it, which is no evidence at all.
     let key_nonce: Vec<u8> = vec![0, 9, 1, 1, 2, 3];
     println!(">> Key Quoting, using nonce {:?}", key_nonce);
 
-    let key_quote = tpm.Certify(&sig_key, &sig_key, &key_nonce, &TPMU_SIG_SCHEME::create(TPM_ALG_ID::NULL)?)?;
+    let key_to_certify = make_child_signing_key(tpm, &primary_key, false)?;
+
+    // The primary was only ever needed to create these two children, and a TPM guarantees room
+    // for no more than three transient objects at once.
+    tpm.FlushContext(&primary_key)?;
+
+    let key_quote = tpm.Certify(&key_to_certify, &sig_key, &key_nonce, &TPMU_SIG_SCHEME::create(TPM_ALG_ID::NULL)?)?;
 
     if let Some(TPMU_ATTEST::certify(certify_attest)) = &key_quote.certifyInfo.attested {
         println!("Key certification obtained successfully");
@@ -295,15 +303,23 @@ fn attestation(tpm: &mut Tpm2) -> Result<(), TpmError> {
         return Err(TpmError::InvalidParameter);
     } ;
 
-    let pub_key = tpm.ReadPublic(&sig_key)?;
+    let certified_public = tpm.ReadPublic(&key_to_certify)?.outPublic;
+    let signing_public = tpm.ReadPublic(&sig_key)?.outPublic;
 
-    if (pub_key.outPublic.validate_certify(&SOFTWARE_PROVIDER, &pub_key.outPublic, &key_nonce, &key_quote)?) {
-        println!("Key certification signature verification SUCCESSFUL! ");
-    } else {
-        println!("Key certification signature verification FAILED! ");
-    }
+    // Validating an attestation says nothing until the attestation key's provenance has been
+    // established somewhere else. Here this process created the signing key moments ago on a
+    // locally attached TPM, so there is no channel for anyone to sit in and `assume_trusted` is
+    // honest. Code attesting a TPM it does not own has no such luxury: establish the key out of
+    // band first - activate a credential against an endorsement key with a manufacturer
+    // certificate, or validate an AK certificate chain - and pass the Name that yields to
+    // `TrustedPublic::from_activated_credential` or `TrustedPublic::from_pinned_name`.
+    let signing_key = TrustedPublic::assume_trusted(signing_public, &SOFTWARE_PROVIDER)?;
+
+    signing_key.validate_certify(&SOFTWARE_PROVIDER, &certified_public, &key_nonce, &key_quote)?;
+    println!("Key certification signature verification SUCCESSFUL! ");
 
     // // Clean up - flush keys from TPM
+    tpm.FlushContext(&key_to_certify)?;
     tpm.FlushContext(&sig_key)?;
     println!("Cleaned up keys from TPM");
 
