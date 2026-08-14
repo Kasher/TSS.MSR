@@ -11,28 +11,189 @@ use crate::tpm_buffer::{TpmBuffer, TpmMarshaller};
 use crate::tpm_structure::{CmdStructure, ReqStructure, RespStructure, TpmEnum};
 use crate::tpm_type_extensions::TrustedPublic;
 use crate::tpm_types::{
-    TPMA_SESSION, TPMS_AUTH_COMMAND, TPMS_AUTH_RESPONSE, TPMT_HA, TPMT_SYM_DEF, TPM_ALG_ID, TPM_CC,
-    TPM_HANDLE, TPM_HT, TPM_RC, TPM_RH, TPM_SE, TPM_ST,
+    CreateLoadedResponse, CreatePrimaryResponse, TPM2_LoadExternal_REQUEST, TPM2_Load_REQUEST,
+    TPMA_SESSION, TPMS_AUTH_COMMAND, TPMS_AUTH_RESPONSE, TPMT_HA, TPMT_PUBLIC, TPMT_SYM_DEF,
+    TPM_ALG_ID, TPM_CC, TPM_HANDLE, TPM_HT, TPM_RC, TPM_RH, TPM_SE, TPM_ST,
 };
+use std::any::Any;
+use std::time::Duration;
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
+
+/// The command element that a format-1 response code blames.
+///
+/// TPM 2.0 Part 1, §39.4: a format-1 code carries a 4-bit number in bits 8-11 alongside the
+/// error itself. `RC_P` (bit 6) makes that number a parameter index; otherwise it is a handle
+/// index, or a session index when `RC_S` (bit 11) is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RcIndex {
+    /// A format-0 code, or a format-1 code that blames nothing in particular.
+    #[default]
+    Unspecified,
+    /// Index of the command handle at fault.
+    Handle(u32),
+    /// Index of the command parameter at fault, counting from 1.
+    Parameter(u32),
+    /// Index of the authorization session at fault.
+    Session(u32),
+}
+
+impl std::fmt::Display for RcIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RcIndex::Unspecified => write!(f, "no particular command element"),
+            RcIndex::Handle(index) => write!(f, "handle {}", index),
+            RcIndex::Parameter(index) => write!(f, "parameter {}", index),
+            RcIndex::Session(index) => write!(f, "session {}", index),
+        }
+    }
+}
+
+/// A TPM response code as it arrives on the wire, split into the error it names and the command
+/// element it blames.
+///
+/// Response codes come in two shapes (TPM 2.0 Part 1, §39.4). A format-0 code is a bare value.
+/// A format-1 code — bit 7 set — folds a parameter, handle or session index into bits 6 and
+/// 8-11, so what arrives is not a member of the `TPM_RC` enumeration at all: `TPM_RC_SIZE`
+/// blamed on the first parameter arrives as `0x1D5`, not `0x095`. Those bits have to be
+/// stripped before the value means anything, which is why a raw response code must never be fed
+/// straight to `TPM_RC::try_from` — most of the errors a TPM actually returns are absent from
+/// the generated match and would decode as "Invalid enum value", discarding the real error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResponseCode {
+    raw: u32,
+    code: TPM_RC,
+    index: RcIndex,
+}
+
+impl ResponseCode {
+    /// Bit 7, set on a format-1 code.
+    const RC_FMT1: u32 = 0x080;
+    /// Bit 6 of a format-1 code: the number field is a parameter index.
+    const RC_P: u32 = 0x040;
+    /// Bit 11 of a format-1 code: the number field is a session index, not a handle index.
+    const RC_S: u32 = 0x800;
+    /// Bits 8-11 of a format-1 code: the parameter, handle or session number.
+    const RC_N_MASK: u32 = 0xF00;
+    const RC_N_SHIFT: u32 = 8;
+    /// What survives masking a format-1 code: the F bit and the 6-bit error number.
+    const FMT1_ERROR_MASK: u32 = 0x0BF;
+    /// What survives masking a format-0 code: the error number, the V bit and the S bit.
+    const FMT0_ERROR_MASK: u32 = 0x97F;
+
+    /// Decode a response code straight off the wire.
+    pub fn decode(raw: u32) -> Self {
+        if Self::is_comm_medium_error(raw) {
+            // Not a TPM response code at all — the TSS communication layer generated it, so
+            // none of the TPM's bit assignments apply and there is nothing to strip.
+            return Self {
+                raw,
+                code: TPM_RC(raw),
+                index: RcIndex::Unspecified,
+            };
+        }
+
+        if raw & Self::RC_FMT1 == 0 {
+            return Self {
+                raw,
+                code: TPM_RC(raw & Self::FMT0_ERROR_MASK),
+                index: RcIndex::Unspecified,
+            };
+        }
+
+        let number = (raw & Self::RC_N_MASK) >> Self::RC_N_SHIFT;
+        let index = if raw & Self::RC_P != 0 {
+            if number == 0 {
+                RcIndex::Unspecified
+            } else {
+                RcIndex::Parameter(number)
+            }
+        } else if raw & Self::RC_S != 0 {
+            // The RC_S marker occupies the top bit of the number field; the session number is
+            // what is left of it.
+            RcIndex::Session(number & 0x7)
+        } else if number == 0 {
+            RcIndex::Unspecified
+        } else {
+            RcIndex::Handle(number)
+        };
+
+        Self {
+            raw,
+            code: TPM_RC(raw & Self::FMT1_ERROR_MASK),
+            index,
+        }
+    }
+
+    /// Whether the response code was generated by the TSS.Rust implementation rather than by
+    /// the TPM.
+    fn is_comm_medium_error(raw: u32) -> bool {
+        raw & 0xFFFF0000 == 0x80280000
+    }
+
+    /// The code exactly as it arrived, index bits included.
+    pub fn raw(&self) -> u32 {
+        self.raw
+    }
+
+    /// The error itself, with any format-1 index bits masked off.
+    pub fn code(&self) -> TPM_RC {
+        self.code
+    }
+
+    /// The command element the TPM blamed for the error.
+    pub fn index(&self) -> RcIndex {
+        self.index
+    }
+
+    /// Whether the TPM reported success.
+    pub fn is_success(&self) -> bool {
+        self.code == TPM_RC::SUCCESS
+    }
+}
+
+impl std::fmt::Display for ResponseCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.index {
+            RcIndex::Unspecified => write!(f, "raw response code 0x{:03X}", self.raw),
+            index => write!(f, "raw response code 0x{:03X}, {}", self.raw, index),
+        }
+    }
+}
 
 /// A TPM error with associated command and context information
 #[derive(Debug, Clone)]
 pub struct TpmCommandError {
-    /// Response code returned by the TPM
+    /// Response code returned by the TPM, with any format-1 index bits masked off
     pub response_code: TPM_RC,
+    /// The response code exactly as it arrived, index bits included
+    pub raw_response_code: u32,
+    /// The command element the TPM blamed, for a format-1 response code
+    pub index: RcIndex,
     /// Command code that triggered the error
     pub command_code: TPM_CC,
     /// Description of the error
     pub message: String,
 }
 
+impl TpmCommandError {
+    /// The error for a command the TPM answered with a failure code.
+    fn from_response(command_code: TPM_CC, response: ResponseCode) -> Self {
+        TpmCommandError {
+            response_code: response.code(),
+            raw_response_code: response.raw(),
+            index: response.index(),
+            command_code,
+            message: response.to_string(),
+        }
+    }
+}
+
 impl std::fmt::Display for TpmCommandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "TPM command {:?} failed with response code {:?}: {}",
+            "TPM command {} failed with TPM_RC::{}: {}",
             self.command_code, self.response_code, self.message
         )
     }
@@ -91,6 +252,11 @@ pub struct Tpm2 {
     /// Name for objects
     object_in_name: Vec<u8>,
 
+    /// The public area the current command supplies for the object it creates, for the commands
+    /// that take one as an input rather than returning it (`TPM2_Load`, `TPM2_LoadExternal`).
+    /// Kept so that the Name the TPM reports for the new object can be checked against it.
+    command_object_public: Option<TPMT_PUBLIC>,
+
     /// Admin authorization handles with auth values
     admin_platform: TPM_HANDLE,
     admin_owner: TPM_HANDLE,
@@ -146,6 +312,7 @@ impl Tpm2 {
             in_handles: Vec::new(),
             object_in_auth: Vec::new(),
             object_in_name: Vec::new(),
+            command_object_public: None,
             admin_platform: TPM_HANDLE::new(0),
             admin_owner: TPM_HANDLE::new(0),
             admin_endorsement: TPM_HANDLE::new(0),
@@ -178,60 +345,75 @@ impl Tpm2 {
         &self.crypto
     }
 
-    /// Checks whether the response code is generated by the TSS.Rust implementation
-    fn is_comm_medium_error(code: TPM_RC) -> bool {
-        // Check if error is in the TSS communication layer rather than TPM itself
-        (code.get_value()) & 0xFFFF0000 == 0x80280000
-    }
+    /// How many times [`Tpm2::dispatch`] resends a command the TPM answered with `TPM_RC_RETRY`
+    /// before giving up on it.
+    const MAX_RETRIES: u32 = 8;
 
-    /// Cleans the raw response code from the TPM
-    fn response_code_from_tpm_error(raw_response: TPM_RC) -> TPM_RC {
-        if Self::is_comm_medium_error(raw_response) {
-            return raw_response;
-        }
-
-        let raw_response_u32 = raw_response.get_value();
-        let is_fmt = (raw_response_u32 & TPM_RC::RC_FMT1.get_value()) != 0;
-
-        let mask: u32 = if is_fmt { 0xBF } else { 0x97F };
-
-        TPM_RC(raw_response_u32 & mask)
-    }
+    /// How long to wait before resending a command the TPM answered with `TPM_RC_RETRY`. It
+    /// doubles on each further resend, up to [`Tpm2::RETRY_MAX_DELAY`], so the whole sequence
+    /// costs well under a second rather than the flat second per attempt it used to.
+    const RETRY_INITIAL_DELAY: Duration = Duration::from_millis(2);
+    const RETRY_MAX_DELAY: Duration = Duration::from_millis(200);
 
     /// Send a TPM command to the underlying TPM device.
-    pub fn dispatch<R: ReqStructure, S: RespStructure>(
+    ///
+    /// `TPM_RC_RETRY` means the TPM was busy and did not act on the command, so the command is
+    /// resent — up to [`Tpm2::MAX_RETRIES`] times, after which a TPM that never stops saying
+    /// "retry" produces an error instead of an unbounded loop.
+    pub fn dispatch<R: ReqStructure + 'static, S: RespStructure + 'static>(
         &mut self,
         cmd_code: TPM_CC,
         req: R,
         resp: &mut S,
     ) -> Result<(), TpmError> {
+        let mut retries = 0u32;
+        let mut delay = Self::RETRY_INITIAL_DELAY;
+
         loop {
-            let process_phase_two = match self.dispatch_command(cmd_code, &req) {
+            let dispatched = match self.dispatch_command(cmd_code, &req) {
                 Ok(v) => v,
                 Err(e) => {
-                    self.current_cmd_code = None;
+                    self.clear_invocation_state();
                     return Err(e);
                 }
             };
+
+            if !dispatched {
+                // Nothing was sent to the TPM: this invocation only computed a cpHash for the
+                // caller, and there is no response to process.
+                return Ok(());
+            }
+
             match self.process_response(cmd_code, resp) {
-                Ok(done) => {
-                    if !process_phase_two || done {
-                        break;
-                    }
-                }
+                Ok(true) => return Ok(()),
+                // TPM_RC_RETRY. The TPM did not act on the command, so resending it is both safe
+                // and the only way to make progress. `process_response` has cleared the
+                // invocation state, without which `dispatch_command` would refuse to run again.
+                Ok(false) => {}
                 Err(e) => {
-                    self.current_cmd_code = None;
+                    self.clear_invocation_state();
                     return Err(e);
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(1000));
-        }
 
-        Ok(())
+            retries += 1;
+            if retries > Self::MAX_RETRIES {
+                self.clear_invocation_state();
+                self.sessions = None;
+                return Err(TpmError::GenericError(format!(
+                    "TPM answered {} with TPM_RC::RETRY {} times running; giving up",
+                    cmd_code,
+                    Self::MAX_RETRIES + 1
+                )));
+            }
+
+            std::thread::sleep(delay);
+            delay = (delay * 2).min(Self::RETRY_MAX_DELAY);
+        }
     }
 
     /// Internal method to dispatch a command to the TPM
-    pub fn dispatch_command<R: ReqStructure>(
+    pub fn dispatch_command<R: ReqStructure + 'static>(
         &mut self,
         cmd_code: TPM_CC,
         req: &R,
@@ -288,6 +470,11 @@ impl Tpm2 {
         req.toTpm(&mut param_buf)?;
         param_buf.trim();
         self.last_cmd_params = param_buf.buffer().clone();
+
+        // The public area of the object this command loads, for the commands that take one as an
+        // input. It does not come back in the response, so it is kept here for the Name check in
+        // `update_resp_handle`.
+        self.command_object_public = Self::request_object_public(cmd_code, req);
 
         // Process authorization sessions if present
         let mut cp_hash_data = Vec::new();
@@ -394,7 +581,11 @@ impl Tpm2 {
     }
 
     /// Process the TPM response and update the response structure
-    pub fn process_response<T: RespStructure>(
+    ///
+    /// Returns `true` when the command completed, and `false` when the TPM answered
+    /// `TPM_RC_RETRY` and the command has to be resent — in which case the invocation state is
+    /// cleared so that the caller can do exactly that.
+    pub fn process_response<T: RespStructure + 'static>(
         &mut self,
         cmd_code: TPM_CC,
         resp_struct: &mut T,
@@ -434,7 +625,13 @@ impl Tpm2 {
         // Read the response header
         let resp_tag = TPM_ST::try_from(resp_buf.readShort())?;
         let resp_size = resp_buf.readInt();
-        let resp_code = TPM_RC::try_from(resp_buf.readInt())?;
+        // The response code is decoded rather than converted. A format-1 code carries a
+        // parameter, handle or session index in bits that belong to no TPM_RC enumerator, so
+        // `TPM_RC::try_from` would reject the majority of the errors a TPM actually returns and
+        // report "Invalid enum value" in place of the real one.
+        let resp_code = ResponseCode::decode(resp_buf.readInt());
+        self.last_response_code = resp_code.code();
+        self.last_error = None;
 
         let act_resp_size = resp_buf.size();
         if resp_size as usize != act_resp_size {
@@ -444,12 +641,14 @@ impl Tpm2 {
             )));
         }
 
-        if resp_code == TPM_RC::RETRY {
+        if resp_code.code() == TPM_RC::RETRY {
+            // The TPM was busy and did not act on the command. Clear the invocation state so
+            // that the command can be dispatched again: leaving `current_cmd_code` set made
+            // every resend fail with "Pending async command must be completed", which meant the
+            // retry path could never succeed.
+            self.clear_invocation_state();
             return Ok(false);
         }
-
-        // Clean and store the response code
-        self.last_response_code = Self::response_code_from_tpm_error(resp_code);
 
         // Figure out our reaction to the received response. This logic depends on:
         //   errors_allowed - no exception, regardless of success or failure
@@ -458,15 +657,13 @@ impl Tpm2 {
         let audit_command = self.audit_command;
 
         // Handle errors and clean up invocation state
-        if resp_code != TPM_RC::SUCCESS {
+        if !resp_code.is_success() {
             self.clear_invocation_state();
             self.sessions = None;
 
-            // Return error
-            return Err(TpmError::GenericError(format!(
-                "TPM Error - TPM_RC::{:?}",
-                self.last_response_code
-            )));
+            let error = TpmCommandError::from_response(cmd_code, resp_code);
+            self.last_error = Some(error.clone());
+            return Err(error.into());
         }
 
         // A check for the session tag consistency across the command invocation
@@ -657,6 +854,7 @@ impl Tpm2 {
     pub fn connect(&mut self) -> Result<(), TpmError> {
         self.device.connect()?;
         self.last_response_code = TPM_RC::SUCCESS;
+        self.last_error = None;
         Ok(())
     }
 
@@ -834,6 +1032,7 @@ impl Tpm2 {
     fn clear_invocation_state(&mut self) {
         self.current_cmd_code = None;
         self.current_session_tag = None;
+        self.command_object_public = None;
         // Clear other command-specific state
     }
 
@@ -1423,8 +1622,76 @@ impl Tpm2 {
         }
     }
 
-    /// Update response handle with name and auth value
-    fn update_resp_handle<T: RespStructure>(
+    /// The public area a command supplies for the object it loads.
+    ///
+    /// `TPM2_Load` and `TPM2_LoadExternal` take the public area as an input and return only the
+    /// handle and the Name, so this is the only place it can be had from.
+    fn request_object_public<R: ReqStructure + 'static>(
+        cmd_code: TPM_CC,
+        req: &R,
+    ) -> Option<TPMT_PUBLIC> {
+        let req = req as &dyn Any;
+        match cmd_code {
+            TPM_CC::Load => req
+                .downcast_ref::<TPM2_Load_REQUEST>()
+                .map(|r| r.inPublic.clone()),
+            TPM_CC::LoadExternal => req
+                .downcast_ref::<TPM2_LoadExternal_REQUEST>()
+                .map(|r| r.inPublic.clone()),
+            _ => None,
+        }
+    }
+
+    /// The public area a response carries for the object the command created.
+    fn response_object_public<T: RespStructure + 'static>(
+        cmd_code: TPM_CC,
+        resp: &T,
+    ) -> Option<&TPMT_PUBLIC> {
+        let resp = resp as &dyn Any;
+        match cmd_code {
+            TPM_CC::CreatePrimary => resp
+                .downcast_ref::<CreatePrimaryResponse>()
+                .map(|r| &r.outPublic),
+            TPM_CC::CreateLoaded => resp
+                .downcast_ref::<CreateLoadedResponse>()
+                .map(|r| &r.outPublic),
+            _ => None,
+        }
+    }
+
+    /// Bind the response handle to the new object's Name, recomputing that Name wherever this
+    /// client holds the public area it is derived from.
+    ///
+    /// The Name of a TPM object is `nameAlg || H_nameAlg(publicArea)` (TPM 2.0 Part 1, §16), so
+    /// it is a value this client can derive for itself instead of taking the TPM's word for it.
+    /// Recomputing it is a **consistency check**: it catches a TPM, resource manager or
+    /// transport that reports a Name which does not belong to the public area it reported
+    /// alongside it, and it stops that inconsistent Name from being written into the handle and
+    /// silently folded into every later cpHash, policy digest and Name comparison.
+    ///
+    /// It is **not** authentication, **not** a defence against an active man in the middle, and
+    /// **not** evidence that the object lives in a TPM. An adversary who supplies the public
+    /// area supplies the Name that matches it and the check passes: the Name is a digest over
+    /// bytes the adversary chose. Its worth beyond catching malfunctions is as a building block
+    /// for a caller who knows which Name to expect — pinned out of band, from an enrolment
+    /// record or a signed manifest — and [`TrustedPublic::from_pinned_name`] is where that
+    /// comparison belongs.
+    ///
+    /// What is available to check against differs by command, and the difference is not
+    /// cosmetic:
+    ///
+    /// * `TPM2_CreatePrimary` and `TPM2_CreateLoaded` return `outPublic`, so the Name is checked
+    ///   against the response's own public area.
+    /// * `TPM2_Load` and `TPM2_LoadExternal` do not: the public area is a command *input*, and
+    ///   the response carries only the handle and the Name. Those two are checked against the
+    ///   `inPublic` the caller passed, captured at dispatch time — a stronger check than the
+    ///   first two, since the public area it compares against is the caller's own.
+    /// * A caller that reaches [`Tpm2::dispatch`] with its own request or response type, rather
+    ///   than the generated one, gets no check: there is nothing to recover the public area
+    ///   from, and the Name is then taken on the TPM's word.
+    /// * `TPM2_HashSequenceStart` and `TPM2_HMAC_Start` return handles to objects that have no
+    ///   public area and no Name, so there is nothing to check.
+    fn update_resp_handle<T: RespStructure + 'static>(
         &mut self,
         cmd_code: TPM_CC,
         resp: &mut T,
@@ -1432,6 +1699,28 @@ impl Tpm2 {
         match cmd_code {
             TPM_CC::Load | TPM_CC::CreatePrimary | TPM_CC::LoadExternal | TPM_CC::CreateLoaded => {
                 let name = resp.get_resp_name();
+
+                let public = match cmd_code {
+                    TPM_CC::CreatePrimary | TPM_CC::CreateLoaded => {
+                        Self::response_object_public(cmd_code, resp).cloned()
+                    }
+                    _ => self.command_object_public.take(),
+                };
+
+                if let Some(public) = public {
+                    // An object loaded with a nameAlg of TPM_ALG_NULL has no digest-based Name;
+                    // TPM2_LoadExternal permits exactly that, and there is nothing to recompute.
+                    if public.nameAlg != TPM_ALG_ID::NULL {
+                        public.verify_name(&name, &self.crypto).map_err(|err| {
+                            TpmError::GenericError(format!(
+                                "{} returned an object Name that fails the consistency check \
+                                 against its public area: {}",
+                                cmd_code, err
+                            ))
+                        })?;
+                    }
+                }
+
                 if !name.is_empty() {
                     let mut handle = resp.get_handle();
                     handle.set_name(&name)?;
@@ -1573,6 +1862,7 @@ mod tests {
     use super::mock_device::{MockResponse, MockTpmDevice};
     use super::*;
     use crate::crypto::software_provider::SOFTWARE_PROVIDER;
+    use crate::tpm_types::*;
     use std::sync::{Arc, Mutex};
 
     const LOCKOUT_AUTH: &[u8] = b"lockout-auth";
@@ -2039,6 +2329,383 @@ mod tests {
                 auth.attributes,
             )
         );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Response code decoding: the shape of an ordinary TPM failure.
+    // ---------------------------------------------------------------------------------------
+
+    /// A response with the given code and body. `TPM_ST_NO_SESSIONS` is the tag a TPM uses for
+    /// an error response, and for any command dispatched without an authorization session.
+    fn response(tag: TPM_ST, response_code: u32, body: &[u8]) -> Vec<u8> {
+        let mut resp = Vec::new();
+        resp.extend_from_slice(&tag.get_value().to_be_bytes());
+        resp.extend_from_slice(&((10 + body.len()) as u32).to_be_bytes());
+        resp.extend_from_slice(&response_code.to_be_bytes());
+        resp.extend_from_slice(body);
+        resp
+    }
+
+    fn error_response(response_code: u32) -> MockResponse {
+        MockResponse::Canned(response(TPM_ST::NO_SESSIONS, response_code, &[]))
+    }
+
+    /// A `TPM2_GetRandom` response carrying `bytes`.
+    fn get_random_response(bytes: &[u8]) -> MockResponse {
+        let mut body = Vec::new();
+        body.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+        body.extend_from_slice(bytes);
+        MockResponse::Canned(response(TPM_ST::NO_SESSIONS, 0, &body))
+    }
+
+    #[test]
+    fn format_one_response_codes_decode_to_their_base_error_and_index() {
+        // Every one of these is a value a TPM puts on the wire, and none of them is a member of
+        // the generated TPM_RC enumeration: a format-1 code folds a parameter, handle or session
+        // number into the value, so running it through `TPM_RC::try_from` reports "Invalid enum
+        // value" and throws the real error away.
+        for raw in [0x1D5u32, 0x1C5, 0x18B, 0x98E, 0xD5, 0xC4] {
+            assert!(
+                TPM_RC::try_from(raw).is_err(),
+                "0x{:X} is deliberately absent from the generated TPM_RC match",
+                raw
+            );
+        }
+
+        // TPM_RC_SIZE (0x095) against parameter 1: RC_FMT1 | RC_P | RC_1.
+        let size_of_parm_1 = ResponseCode::decode(0x1D5);
+        assert_eq!(size_of_parm_1.raw(), 0x1D5);
+        assert_eq!(size_of_parm_1.code(), TPM_RC::SIZE);
+        assert_eq!(size_of_parm_1.index(), RcIndex::Parameter(1));
+
+        // TPM_RC_HIERARCHY (0x085) against parameter 1.
+        let hierarchy_of_parm_1 = ResponseCode::decode(0x1C5);
+        assert_eq!(hierarchy_of_parm_1.code(), TPM_RC::HIERARCHY);
+        assert_eq!(hierarchy_of_parm_1.index(), RcIndex::Parameter(1));
+
+        // TPM_RC_HANDLE (0x08B) against handle 1: RC_FMT1 | RC_1, with RC_P clear.
+        let handle_1 = ResponseCode::decode(0x18B);
+        assert_eq!(handle_1.code(), TPM_RC::HANDLE);
+        assert_eq!(handle_1.index(), RcIndex::Handle(1));
+
+        // TPM_RC_AUTH_FAIL (0x08E) against session 1: RC_FMT1 | RC_S | RC_1.
+        let auth_fail_of_session_1 = ResponseCode::decode(0x98E);
+        assert_eq!(auth_fail_of_session_1.code(), TPM_RC::AUTH_FAIL);
+        assert_eq!(auth_fail_of_session_1.index(), RcIndex::Session(1));
+
+        // A format-1 code with no number field names no particular element.
+        assert_eq!(ResponseCode::decode(0xD5).code(), TPM_RC::SIZE);
+        assert_eq!(ResponseCode::decode(0xD5).index(), RcIndex::Unspecified);
+    }
+
+    #[test]
+    fn format_zero_response_codes_are_left_alone() {
+        // Format-0 codes carry no index, and must survive decoding unchanged.
+        for (raw, expected) in [
+            (0x000u32, TPM_RC::SUCCESS),
+            (0x101, TPM_RC::FAILURE),
+            (0x921, TPM_RC::LOCKOUT),
+            (0x922, TPM_RC::RETRY),
+        ] {
+            let decoded = ResponseCode::decode(raw);
+            assert_eq!(decoded.code(), expected, "0x{:X}", raw);
+            assert_eq!(decoded.index(), RcIndex::Unspecified, "0x{:X}", raw);
+            assert_eq!(decoded.raw(), raw);
+        }
+        assert!(ResponseCode::decode(0).is_success());
+
+        // A code the TSS communication layer generated is not a TPM response code and none of
+        // the TPM's bit assignments apply to it.
+        let comm_error = ResponseCode::decode(0x80280002);
+        assert_eq!(comm_error.code(), TPM_RC(0x80280002));
+        assert_eq!(comm_error.index(), RcIndex::Unspecified);
+    }
+
+    #[test]
+    fn a_format_one_error_surfaces_as_the_error_the_tpm_reported() {
+        let (mut tpm, _log) = tpm_with(vec![error_response(0x1D5)]);
+
+        let err = tpm
+            .GetRandom(20)
+            .expect_err("the TPM reported a failure code");
+        let text = format!("{}", err);
+        assert!(
+            !text.contains("Invalid enum value"),
+            "the real response code must not be discarded: {}",
+            text
+        );
+        assert!(text.contains("SIZE"), "unexpected error: {}", text);
+        assert!(text.contains("parameter 1"), "unexpected error: {}", text);
+
+        assert_eq!(tpm.last_response_code(), TPM_RC::SIZE);
+
+        let last = tpm
+            .last_error()
+            .expect("last_error() must be populated for a TPM failure");
+        assert_eq!(last.response_code, TPM_RC::SIZE);
+        assert_eq!(
+            last.raw_response_code, 0x1D5,
+            "the code as it arrived must be preserved, not just its masked form"
+        );
+        assert_eq!(last.index, RcIndex::Parameter(1));
+        assert_eq!(last.command_code, TPM_CC::GetRandom);
+    }
+
+    #[test]
+    fn last_error_is_cleared_by_a_command_that_succeeds() {
+        let (mut tpm, _log) =
+            tpm_with(vec![error_response(0x1D5), get_random_response(&[0xAB; 8])]);
+
+        assert!(tpm.GetRandom(20).is_err());
+        assert!(tpm.last_error().is_some());
+
+        assert_eq!(tpm.GetRandom(8).unwrap(), vec![0xAB; 8]);
+        assert_eq!(tpm.last_response_code(), TPM_RC::SUCCESS);
+        assert!(
+            tpm.last_error().is_none(),
+            "a successful command must not leave the previous failure behind"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // TPM_RC_RETRY: the TPM was busy and did not act on the command.
+    // ---------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_command_the_tpm_asks_to_retry_is_resent_and_can_succeed() {
+        let (mut tpm, log) = tpm_with(vec![
+            error_response(TPM_RC::RETRY.get_value()),
+            get_random_response(&[0xAB; 8]),
+        ]);
+
+        // This used to be impossible: the retry path left `current_cmd_code` set, so the resend
+        // failed with "Pending async command must be completed before issuing the next command."
+        let out = tpm
+            .GetRandom(8)
+            .expect("a command the TPM asked to retry should be able to complete");
+        assert_eq!(out, vec![0xAB; 8]);
+
+        let commands = log.lock().unwrap();
+        assert_eq!(
+            commands.len(),
+            2,
+            "the command should have been resent once"
+        );
+        assert_eq!(
+            commands[0], commands[1],
+            "the resend should be the same command, byte for byte"
+        );
+    }
+
+    #[test]
+    fn a_tpm_that_never_stops_retrying_terminates_with_an_error() {
+        let responses = (0..64)
+            .map(|_| error_response(TPM_RC::RETRY.get_value()))
+            .collect();
+        let (mut tpm, log) = tpm_with(responses);
+
+        let start = std::time::Instant::now();
+        let err = tpm
+            .GetRandom(8)
+            .expect_err("an unending retry must not loop forever");
+        let elapsed = start.elapsed();
+
+        assert!(
+            format!("{}", err).contains("RETRY"),
+            "the caller should be told why: {}",
+            err
+        );
+        assert_eq!(
+            log.lock().unwrap().len() as u32,
+            Tpm2::MAX_RETRIES + 1,
+            "the command should be sent once and then retried a bounded number of times"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(3),
+            "a bounded backoff, not a flat second of blocking per attempt: {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn a_retried_command_with_an_authorization_session_is_resent_unchanged() {
+        // The resend re-marshals the request, including the authorization area. A command whose
+        // password session this client created for itself has to come out the same the second
+        // time round, or the TPM would reject the retry.
+        let public = sample_public(0x77);
+        let name = name_of(&public);
+        let (mut tpm, log) = tpm_with(vec![
+            error_response(TPM_RC::RETRY.get_value()),
+            create_primary_response(&public, &name),
+        ]);
+
+        create_primary(&mut tpm, &public).expect("the resend should carry a valid authorization");
+
+        let commands = log.lock().unwrap();
+        assert_eq!(
+            commands.len(),
+            2,
+            "the command should have been resent once"
+        );
+        assert_eq!(
+            commands[0], commands[1],
+            "the resend should be the same command, authorization area included"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Object Names: a consistency check between the Name a command reports and the public area
+    // that Name is a digest over. Not authentication, and no defence against an adversary who
+    // supplies both -- see `Tpm2::update_resp_handle`.
+    // ---------------------------------------------------------------------------------------
+
+    /// A minimal keyed-hash public area, distinguished by its `unique` field so that two of them
+    /// have different Names.
+    fn sample_public(unique: u8) -> TPMT_PUBLIC {
+        let parameters = TPMU_PUBLIC_PARMS::keyedHashDetail(TPMS_KEYEDHASH_PARMS::new(&Some(
+            TPMU_SCHEME_KEYEDHASH::hmac(TPMS_SCHEME_HMAC {
+                hashAlg: TPM_ALG_ID::SHA256,
+            }),
+        )));
+        let unique = TPMU_PUBLIC_ID::keyedHash(TPM2B_DIGEST_KEYEDHASH {
+            buffer: vec![unique; 32],
+        });
+        TPMT_PUBLIC::new(
+            TPM_ALG_ID::SHA256,
+            TPMA_OBJECT::sign | TPMA_OBJECT::userWithAuth,
+            &Vec::new(),
+            &Some(parameters),
+            &Some(unique),
+        )
+    }
+
+    fn name_of(public: &TPMT_PUBLIC) -> Vec<u8> {
+        public.get_name(&SOFTWARE_PROVIDER).unwrap()
+    }
+
+    const OBJECT_HANDLE: u32 = 0x80000001;
+
+    /// A `TPM2_LoadExternal` response: a transient object handle and the object's Name.
+    fn load_external_response(name: &[u8]) -> MockResponse {
+        let mut body = Vec::new();
+        body.extend_from_slice(&OBJECT_HANDLE.to_be_bytes());
+        body.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        body.extend_from_slice(name);
+        MockResponse::Canned(response(TPM_ST::NO_SESSIONS, 0, &body))
+    }
+
+    fn load_external(tpm: &mut Tpm2, public: &TPMT_PUBLIC) -> Result<TPM_HANDLE, TpmError> {
+        tpm.LoadExternal(
+            &TPMT_SENSITIVE::default(),
+            public,
+            &TPM_HANDLE::new(TPM_RH::NULL.get_value()),
+        )
+    }
+
+    /// A `TPM2_CreatePrimary` response, authorized by the password session the client creates
+    /// for the one auth handle: empty nonce, empty HMAC.
+    fn create_primary_response(public: &TPMT_PUBLIC, name: &[u8]) -> MockResponse {
+        let params = CreatePrimaryResponse {
+            outPublic: public.clone(),
+            creationHash: vec![0u8; 32],
+            creationTicket: TPMT_TK_CREATION::new(
+                &TPM_HANDLE::new(TPM_RH::OWNER.get_value()),
+                &vec![0u8; 32],
+            ),
+            name: name.to_vec(),
+            ..Default::default()
+        };
+        let params = params.toBytes().unwrap();
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&OBJECT_HANDLE.to_be_bytes());
+        body.extend_from_slice(&(params.len() as u32).to_be_bytes());
+        body.extend_from_slice(&params);
+        body.extend_from_slice(&0u16.to_be_bytes()); // nonce
+        body.push(TPMA_SESSION::continueSession.get_value());
+        body.extend_from_slice(&0u16.to_be_bytes()); // hmac
+        MockResponse::Canned(response(TPM_ST::SESSIONS, 0, &body))
+    }
+
+    fn create_primary(tpm: &mut Tpm2, public: &TPMT_PUBLIC) -> Result<TPM_HANDLE, TpmError> {
+        tpm.CreatePrimary(
+            &TPM_HANDLE::new(TPM_RH::OWNER.get_value()),
+            &TPMS_SENSITIVE_CREATE::new(&Vec::new(), &Vec::new()),
+            public,
+            &Vec::new(),
+            &Vec::new(),
+        )
+        .map(|resp| resp.handle)
+    }
+
+    #[test]
+    fn create_primary_accepts_a_name_that_matches_the_public_area_it_returned() {
+        let public = sample_public(0x11);
+        let name = name_of(&public);
+        let (mut tpm, _log) = tpm_with(vec![create_primary_response(&public, &name)]);
+
+        let handle = create_primary(&mut tpm, &public)
+            .expect("a Name consistent with outPublic must be accepted");
+        assert_eq!(handle.get_name().unwrap(), name);
+    }
+
+    #[test]
+    fn create_primary_rejects_a_name_that_disagrees_with_the_public_area_it_returned() {
+        // The Name of a different public area: the inconsistency a malfunctioning TPM or
+        // resource manager produces, and which used to be copied into the handle unexamined.
+        let public = sample_public(0x11);
+        let wrong_name = name_of(&sample_public(0x22));
+        let (mut tpm, _log) = tpm_with(vec![create_primary_response(&public, &wrong_name)]);
+
+        let err = create_primary(&mut tpm, &public)
+            .expect_err("a Name that is not a digest over the returned public area is bogus");
+        assert!(
+            format!("{}", err).contains("consistency check"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn load_external_accepts_a_name_that_matches_the_public_area_it_was_given() {
+        // TPM2_LoadExternal returns only a handle and a Name -- the public area was a command
+        // input -- so the Name is checked against the caller's own `inPublic`.
+        let public = sample_public(0x33);
+        let name = name_of(&public);
+        let (mut tpm, _log) = tpm_with(vec![load_external_response(&name)]);
+
+        let handle = load_external(&mut tpm, &public).expect("a consistent Name must be accepted");
+        assert_eq!(handle.get_name().unwrap(), name);
+    }
+
+    #[test]
+    fn load_external_rejects_a_name_that_disagrees_with_the_public_area_it_was_given() {
+        let public = sample_public(0x33);
+        let wrong_name = name_of(&sample_public(0x44));
+        let (mut tpm, _log) = tpm_with(vec![load_external_response(&wrong_name)]);
+
+        let err = load_external(&mut tpm, &public)
+            .expect_err("the TPM's Name must agree with the public area it was handed");
+        assert!(
+            format!("{}", err).contains("consistency check"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn a_command_input_public_area_does_not_leak_into_the_next_command() {
+        // The captured `inPublic` is per-invocation state. If it survived the command it was
+        // captured for, the next Load would be checked against the wrong object.
+        let first = sample_public(0x55);
+        let second = sample_public(0x66);
+        let (mut tpm, _log) = tpm_with(vec![
+            load_external_response(&name_of(&first)),
+            load_external_response(&name_of(&second)),
+        ]);
+
+        load_external(&mut tpm, &first).expect("first load is consistent");
+        load_external(&mut tpm, &second).expect("second load is consistent with its own public");
     }
 }
 
