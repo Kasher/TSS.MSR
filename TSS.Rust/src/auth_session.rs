@@ -22,6 +22,15 @@ pub struct Session {
     /// it is wiped when dropped and withheld from the [`Debug`] rendering below.
     pub session_key: Vec<u8>,
 
+    /// Whether `session_key` was derived from anything an eavesdropper does not already have.
+    ///
+    /// A session key is only worth something if the KDFa that produced it took a secret input:
+    /// the salt, or the authValue of the bind entity. An unsalted session bound to an entity
+    /// whose authValue is empty produces a perfectly non-empty `session_key` that is a pure
+    /// function of the two nonces — both of which travel in the clear. Emptiness of
+    /// `session_key` therefore is not the property that matters; this flag is.
+    secret_key_material: bool,
+
     /// Symmetric algorithm for parameter encryption
     pub symmetric: TPMT_SYM_DEF,
 
@@ -85,16 +94,13 @@ impl Session {
                 session_attributes,
                 &Vec::new(),
             ),
-            sess_out: TPMS_AUTH_RESPONSE::new(
-                &nonce_tpm.to_vec(), 
-                session_attributes,
-                &Vec::new(),
-            ),
+            sess_out: TPMS_AUTH_RESPONSE::new(&nonce_tpm.to_vec(), session_attributes, &Vec::new()),
             hash_alg: TPM_ALG_ID::SHA256,
             session_type: TPM_SE::HMAC,
             needs_hmac: true,
             needs_password: false,
             session_key: Vec::new(),
+            secret_key_material: false,
             symmetric: TPMT_SYM_DEF::default(),
             bind_handle: TPM_RH::NULL.get_value(),
         }
@@ -140,22 +146,51 @@ impl Session {
                 attributes,
                 &Vec::new(),
             ),
-            sess_out: TPMS_AUTH_RESPONSE::new(
-                &nonce_tpm,
-                attributes,
-                &Vec::new(),
-            ),
+            sess_out: TPMS_AUTH_RESPONSE::new(&nonce_tpm, attributes, &Vec::new()),
             hash_alg,
             session_type,
             needs_hmac: session_type == TPM_SE::HMAC,
             needs_password: false,
             session_key: Vec::new(),
+            secret_key_material: false,
             symmetric,
             bind_handle: bind_object.handle,
         };
 
         sess.calc_session_key(crypto, salt, bind_object)?;
+        sess.reject_vacuous_param_encryption(attributes)?;
         Ok(sess)
+    }
+
+    /// Refuse `TPMA_SESSION::encrypt` / `decrypt` on a session with no secret key material.
+    ///
+    /// Parameter encryption derives its AES-CFB key with
+    /// `KDFa(hashAlg, sessionKey, "CFB", nonceNewer, nonceOlder)`. On an unsalted *and* unbound
+    /// session `sessionKey` is empty, so every input to that derivation — both nonces — travels
+    /// over the wire in the clear. Anyone who sees the exchange derives the same key and reads
+    /// the "encrypted" parameter. It is not weak encryption, it is no encryption, and it is
+    /// worse than none because the caller believes the parameter is protected.
+    ///
+    /// The same is true, less obviously, of a session bound to an entity with an empty
+    /// authValue: `sessionKey` is then non-empty but is still a deterministic function of the
+    /// two public nonces. `secret_key_material` is what distinguishes the two cases.
+    ///
+    /// Salt the session ([`crate::tpm2_impl::Tpm2::start_salted_auth_session`]) or bind it to an
+    /// entity with a non-empty authValue, and the derivation gains an input an observer does not
+    /// have.
+    fn reject_vacuous_param_encryption(&self, attributes: TPMA_SESSION) -> Result<(), TpmError> {
+        let xcrypt = TPMA_SESSION::encrypt.get_value() | TPMA_SESSION::decrypt.get_value();
+        if (attributes.get_value() & xcrypt) != 0 && !self.secret_key_material {
+            return Err(TpmError::GenericError(
+                "Parameter encryption was requested on a session with no secret key material. \
+                 An unsalted session that is unbound (or bound to an entity with an empty \
+                 authValue) derives its encryption key entirely from nonces that travel in the \
+                 clear, so the encryption protects nothing. Salt the session or bind it to an \
+                 entity with a non-empty authValue."
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Derive the session key using KDFa with label "ATH".
@@ -183,14 +218,18 @@ impl Session {
         }
         hmac_key.extend_from_slice(salt);
 
+        // The KDFa below runs regardless, because the TPM runs it too and the two keys must
+        // agree. What it produces is only *secret* if something secret went into it.
+        self.secret_key_material = !hmac_key.is_empty();
+
         let hash_bits = Crypto::digest_size_checked(self.hash_alg)? * 8;
         self.session_key = Crypto::kdfa(
             crypto,
             self.hash_alg,
             &hmac_key,
             "ATH",
-            &self.sess_out.nonce,  // nonceTPM
-            &self.sess_in.nonce,   // nonceCaller
+            &self.sess_out.nonce, // nonceTPM
+            &self.sess_in.nonce,  // nonceCaller
             hash_bits,
         )?;
 
@@ -212,6 +251,70 @@ impl Session {
     /// Get the hash algorithm used by this session
     pub fn get_hash_alg(&self) -> TPM_ALG_ID {
         self.hash_alg
+    }
+
+    /// Whether the authValue of the entity being authorized is folded into the HMAC key.
+    ///
+    /// This mirrors `session->attributes.includeAuth` in the TPM reference implementation
+    /// (`SessionProcess.c`, `CheckAuthSession`):
+    ///
+    /// * policy session — include only when `TPM2_PolicyAuthValue` or `TPM2_PolicyPassword` has
+    ///   run, i.e. when the TPM's `isAuthValueNeeded` / `isPasswordNeeded` is SET;
+    /// * HMAC session — include unless the session is bound to this very entity, in which case
+    ///   the authValue is already inside `sessionKey`.
+    fn includes_auth_value(&self, associated_handle: Option<&TPM_HANDLE>) -> bool {
+        if self.session_type == TPM_SE::POLICY {
+            return self.needs_hmac || self.needs_password;
+        }
+
+        match associated_handle {
+            None => false,
+            Some(handle) => {
+                let bound_to_this_entity = self.bind_handle != TPM_RH::NULL.get_value()
+                    && self.bind_handle != 0
+                    && handle.handle == self.bind_handle;
+                !bound_to_this_entity
+            }
+        }
+    }
+
+    /// `hmacKey = sessionKey || authValue`, the key both the command and the response HMAC use.
+    fn auth_hmac_key(&self, associated_handle: Option<&TPM_HANDLE>) -> Vec<u8> {
+        let mut key = self.session_key.clone();
+        if self.includes_auth_value(associated_handle) {
+            if let Some(handle) = associated_handle {
+                key.extend_from_slice(&trim_trailing_zeros(&handle.auth_value));
+            }
+        }
+        key
+    }
+
+    /// Whether this session's key was derived from a secret (salt, or a non-empty bind
+    /// authValue). Sessions without it cannot be used for parameter encryption.
+    pub fn has_secret_key_material(&self) -> bool {
+        self.secret_key_material
+    }
+
+    /// Whether the TPM will place an authorization HMAC in the response for this session.
+    ///
+    /// The TPM's rule, from `BuildSingleResponseAuth` in the reference implementation:
+    /// a password session carries no response auth, and neither does a policy session on which
+    /// `TPM2_PolicyPassword` has run — in both cases the TPM returns an empty `hmac` field.
+    /// Every other session gets one, and it must be verified: skipping verification on a policy
+    /// session leaves the response parameters unauthenticated even though the session had the
+    /// key material to authenticate them.
+    ///
+    /// (The TPM has one further shortcut — it also returns an empty field when the HMAC key is
+    /// empty *and* the command's auth field was empty. This client never sends an empty auth
+    /// field for such a session, precisely so that the shortcut cannot be taken and the
+    /// response is always authenticated as far as the session's key material allows.)
+    pub fn expects_response_auth(&self) -> bool {
+        !self.is_pwap() && !self.needs_password
+    }
+
+    /// Whether a command using this session carries a computed HMAC rather than a password.
+    pub fn sends_command_hmac(&self) -> bool {
+        !self.is_pwap() && !self.needs_password
     }
 
     /// Generate an HMAC for authorization.
@@ -250,26 +353,7 @@ impl Session {
             vec![self.sess_out.sessionAttributes.get_value()]
         };
 
-        // Get auth value from the associated handle
-        let mut auth = Vec::new();
-        if let Some(handle) = associated_handle {
-            // For bound sessions: if the handle IS the bound entity, skip auth
-            // (it's already incorporated in the session key via KDFa).
-            let is_bound = self.bind_handle != TPM_RH::NULL.get_value()
-                && self.bind_handle != 0
-                && handle.handle == self.bind_handle;
-
-            if is_bound {
-                // Bound to same entity: auth already in session key, don't add again
-            } else if self.session_type != TPM_SE::POLICY || self.needs_hmac {
-                auth = trim_trailing_zeros(&handle.auth_value);
-            }
-        }
-
-        // hmacKey = sessionKey || auth
-        let mut hmac_key = Vec::new();
-        hmac_key.extend_from_slice(&self.session_key);
-        hmac_key.extend_from_slice(&auth);
+        let hmac_key = self.auth_hmac_key(associated_handle);
 
         // Buffer to HMAC: parmHash || nonceNewer || nonceOlder || nonceDec || nonceEnc || sessionAttrs
         let mut buf_to_hmac = Vec::new();
@@ -296,6 +380,17 @@ impl Session {
             return Ok(Vec::new());
         }
 
+        // Refuse to derive an encryption key from public values alone. See
+        // `reject_vacuous_param_encryption`: this is the second gate, so that a `Session`
+        // assembled by hand rather than by `from_tpm_response` cannot slip past the first.
+        if !self.secret_key_material {
+            return Err(TpmError::GenericError(
+                "Refusing parameter encryption on a session with no secret key material: the \
+                 AES-CFB key would be derived entirely from nonces that travel in the clear."
+                    .to_string(),
+            ));
+        }
+
         // Only AES-128/256 CFB is supported
         if self.symmetric.algorithm != TPM_ALG_ID::AES || self.symmetric.mode != TPM_ALG_ID::CFB {
             return Err(TpmError::GenericError(
@@ -305,9 +400,10 @@ impl Session {
 
         let key_bits = self.symmetric.keyBits as usize;
         if key_bits != 128 && key_bits != 256 {
-            return Err(TpmError::GenericError(
-                format!("Unsupported AES key size: {} bits", key_bits),
-            ));
+            return Err(TpmError::GenericError(format!(
+                "Unsupported AES key size: {} bits",
+                key_bits
+            )));
         }
 
         let key_size = key_bits / 8;
@@ -419,5 +515,151 @@ mod secret_redaction_tests {
             session.sess_in.sessionHandle.handle
         );
         assert_eq!(copy.hash_alg, session.hash_alg);
+    }
+}
+
+#[cfg(all(test, feature = "software-crypto"))]
+mod tests {
+    use super::*;
+    use crate::crypto::software_provider::SOFTWARE_PROVIDER;
+
+    const SALT: &[u8] = b"a thirty-two byte session salt..";
+
+    fn start(
+        attributes: TPMA_SESSION,
+        salt: &[u8],
+        bind: &TPM_HANDLE,
+    ) -> Result<Session, TpmError> {
+        Session::from_tpm_response(
+            &SOFTWARE_PROVIDER,
+            TPM_HANDLE::new(0x02000000),
+            TPM_SE::HMAC,
+            TPM_ALG_ID::SHA256,
+            vec![0xAA; 32],
+            vec![0xBB; 32],
+            attributes,
+            TPMT_SYM_DEF::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
+            salt,
+            bind,
+        )
+    }
+
+    fn null_handle() -> TPM_HANDLE {
+        TPM_HANDLE::new(TPM_RH::NULL.get_value())
+    }
+
+    #[test]
+    fn unsalted_unbound_session_rejects_parameter_encryption() {
+        // KDFa(hash, <empty>, "CFB", nonceNewer, nonceOlder) is a function of two values that
+        // both travelled in the clear. Anyone who saw the exchange derives the same AES-CFB key.
+        let err = start(
+            TPMA_SESSION::continueSession | TPMA_SESSION::decrypt,
+            &[],
+            &null_handle(),
+        )
+        .expect_err("parameter encryption with no key material must be refused");
+        assert!(
+            format!("{}", err).contains("no secret key material"),
+            "unexpected error: {}",
+            err
+        );
+
+        let err = start(
+            TPMA_SESSION::continueSession | TPMA_SESSION::encrypt,
+            &[],
+            &null_handle(),
+        )
+        .expect_err("the encrypt direction is no better than the decrypt direction");
+        assert!(format!("{}", err).contains("no secret key material"));
+    }
+
+    #[test]
+    fn session_bound_to_an_entity_with_an_empty_auth_rejects_parameter_encryption() {
+        // Less obvious than the unbound case and just as vacuous: KDFa runs, so `session_key` is
+        // non-empty, but its only inputs are the two public nonces.
+        let mut bound = TPM_HANDLE::new(0x81000001);
+        bound.set_auth(&[]);
+
+        let err = start(
+            TPMA_SESSION::continueSession | TPMA_SESSION::decrypt,
+            &[],
+            &bound,
+        )
+        .expect_err("an empty bind authValue contributes no secret");
+        assert!(format!("{}", err).contains("no secret key material"));
+    }
+
+    #[test]
+    fn an_unencrypted_unsalted_session_is_still_allowed() {
+        // The rejection is scoped to parameter encryption. Plain authorization over an unsalted,
+        // unbound session remains legitimate and is what most callers use.
+        let sess = start(TPMA_SESSION::continueSession, &[], &null_handle()).unwrap();
+        assert!(sess.session_key.is_empty());
+        assert!(!sess.has_secret_key_material());
+    }
+
+    #[test]
+    fn a_salted_session_allows_parameter_encryption() {
+        let sess = start(
+            TPMA_SESSION::continueSession | TPMA_SESSION::decrypt,
+            SALT,
+            &null_handle(),
+        )
+        .expect("a salted session has a secret input and may encrypt parameters");
+        assert!(sess.has_secret_key_material());
+        assert_eq!(sess.session_key.len(), 32);
+        assert!(sess
+            .param_xcrypt(&SOFTWARE_PROVIDER, &[1, 2, 3, 4], true)
+            .is_ok());
+    }
+
+    #[test]
+    fn a_session_bound_to_a_non_empty_auth_allows_parameter_encryption() {
+        let mut bound = TPM_HANDLE::new(0x81000001);
+        bound.set_auth(b"bind-auth");
+
+        let sess = start(
+            TPMA_SESSION::continueSession | TPMA_SESSION::decrypt,
+            &[],
+            &bound,
+        )
+        .expect("a non-empty bind authValue is a secret an observer does not have");
+        assert!(sess.has_secret_key_material());
+    }
+
+    #[test]
+    fn param_xcrypt_refuses_a_session_without_secret_key_material() {
+        // The second gate: a `Session` assembled by hand rather than through
+        // `from_tpm_response` must not be able to reach the vacuous derivation either.
+        let mut sess = Session::new(
+            TPM_HANDLE::new(0x02000000),
+            &[0xBB; 32],
+            TPMA_SESSION::continueSession,
+            &[0xAA; 32],
+        );
+        sess.symmetric = TPMT_SYM_DEF::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB);
+
+        let err = sess
+            .param_xcrypt(&SOFTWARE_PROVIDER, &[1, 2, 3, 4], true)
+            .expect_err("no key material means no encryption");
+        assert!(format!("{}", err).contains("no secret key material"));
+    }
+
+    #[test]
+    fn a_password_session_expects_no_response_auth() {
+        let sess = Session::pw(Some(b"auth".to_vec()));
+        assert!(sess.is_pwap());
+        assert!(!sess.expects_response_auth());
+    }
+
+    #[test]
+    fn a_policy_session_without_policy_password_expects_a_response_auth() {
+        // The rule is `!is_pwap && !needs_password`, not "HMAC session or PolicyAuthValue ran".
+        // A policy session driven by PolicyPCR alone still gets an authenticated response.
+        let mut sess = start(TPMA_SESSION::continueSession, SALT, &null_handle()).unwrap();
+        sess.session_type = TPM_SE::POLICY;
+        sess.needs_hmac = false;
+        sess.needs_password = false;
+        assert!(sess.expects_response_auth());
     }
 }

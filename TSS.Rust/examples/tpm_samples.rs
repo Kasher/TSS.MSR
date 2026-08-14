@@ -33,7 +33,7 @@ use tss_msr_rs::{
     crypto::{software_provider::SOFTWARE_PROVIDER, Crypto},
     device::{TpmDevice, TpmTbsDevice}, error::TpmError,
     policy::{self, PolicyTree, PolicyCommandCode, PolicyLocality, PolicyOr, PolicyPassword},
-    tpm2_impl::*, tpm_structure::{TpmEnum}, tpm_types::*
+    tpm2_impl::*, tpm_structure::{TpmEnum}, tpm_type_extensions::TrustedPublic, tpm_types::*
 };
 
 lazy_static::lazy_static! {
@@ -2067,13 +2067,39 @@ fn async_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 fn session_encryption_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     announce("SessionEncryption Sample");
 
-    // Session encryption is transparent to the application programmer.
-    // Create a session with decrypt/encrypt attributes and the library handles
-    // the AES-CFB encryption/decryption of the first parameter automatically.
+    // Session encryption is transparent to the application programmer: set decrypt/encrypt on
+    // the session and the library handles the AES-CFB of the first parameter.
+    //
+    // What is NOT transparent, and is the point of this sample, is where the encryption key
+    // comes from. It is KDFa(hashAlg, sessionKey, "CFB", nonceNewer, nonceOlder). Both nonces
+    // travel in the clear, so unless `sessionKey` itself was derived from a secret, the key is a
+    // pure function of values anyone watching the bus already has. An unsalted, unbound session
+    // is exactly that case, and this library now refuses it rather than pretending to encrypt.
+    //
+    // So: salt the session. The salt is generated inside the library, encrypted to a key we
+    // nominate, and never appears on the wire in the clear.
+    let salt_key = make_storage_primary(tpm)?;
+    let salt_key_public = tpm.ReadPublic(&salt_key)?.outPublic;
+    // A key this process just created: nothing untrusted stands between us and it. Adopting a
+    // key from elsewhere means pinning its Name out of band and using `from_pinned_name`.
+    let salt_key_public = TrustedPublic::assume_trusted(salt_key_public, &SOFTWARE_PROVIDER)?;
+
+    // Show what the library now refuses, so the reason is on the page rather than buried in a
+    // doc comment somewhere.
+    let vacuous = tpm.start_auth_session_full(
+        TPM_SE::HMAC, TPM_ALG_ID::SHA256,
+        TPMA_SESSION::continueSession | TPMA_SESSION::decrypt,
+        TPMT_SYM_DEF::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
+    );
+    match vacuous {
+        Err(e) => println!("Unsalted, unbound parameter encryption correctly refused: {}", e),
+        Ok(_) => println!("Warning: an unsalted, unbound encrypting session was allowed"),
+    }
 
     // Part 1: Encrypt commands TO the TPM (decrypt attribute)
     println!(">> Encrypt commands to TPM (TPMA_SESSION::decrypt)");
-    let sess = tpm.start_auth_session_full(
+    let sess = tpm.start_salted_auth_session(
+        &salt_key, &salt_key_public,
         TPM_SE::HMAC, TPM_ALG_ID::SHA256,
         TPMA_SESSION::continueSession | TPMA_SESSION::decrypt,
         TPMT_SYM_DEF::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
@@ -2094,21 +2120,19 @@ fn session_encryption_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     // Part 2: Encrypt responses FROM the TPM (encrypt attribute)
     println!("\n>> Encrypt responses from TPM (TPMA_SESSION::encrypt)");
 
-    // Create a primary key so we have something to read
-    let storage_primary = make_storage_primary(tpm)?;
-
     // Read public key without encryption
-    let plaintext_read = tpm.ReadPublic(&storage_primary)?;
+    let plaintext_read = tpm.ReadPublic(&salt_key)?;
 
     // Make an encrypting session for response
-    let enc_sess = tpm.start_auth_session_full(
+    let enc_sess = tpm.start_salted_auth_session(
+        &salt_key, &salt_key_public,
         TPM_SE::HMAC, TPM_ALG_ID::SHA256,
         TPMA_SESSION::continueSession | TPMA_SESSION::encrypt,
         TPMT_SYM_DEF::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
     )?;
 
     // ReadPublic with encrypted response - the library should decrypt automatically
-    let encrypted_read = tpm.with_session(enc_sess.clone()).ReadPublic(&storage_primary)?;
+    let encrypted_read = tpm.with_session(enc_sess.clone()).ReadPublic(&salt_key)?;
     let enc_sess = tpm.last_session().unwrap();
 
     // Compare: the decrypted response should match the plaintext
@@ -2121,7 +2145,7 @@ fn session_encryption_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     }
 
     tpm.FlushContext(&session_handle(&enc_sess))?;
-    tpm.FlushContext(&storage_primary)?;
+    tpm.FlushContext(&salt_key)?;
 
     println!("SessionEncryption sample completed successfully");
     Ok(())
@@ -2534,30 +2558,36 @@ fn policy_tree_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     Ok(())
 }
 
-/// Demonstrates a salted (seeded) auth session. The salt is RSA-OAEP encrypted
-/// to a storage primary's public key, providing protection even when authValues
-/// are known or can be inferred.
+/// Demonstrates a salted (seeded) auth session. The salt is generated inside
+/// `start_salted_auth_session`, sized to the session hash, and RSA-OAEP encrypted
+/// to a storage primary's public key. That gives the session key an input an
+/// eavesdropper does not have, which is what parameter encryption and HMAC integrity need.
 fn seeded_session_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     announce("SeededSession");
 
     // Create a storage primary to use as the salt-encryption key
     let salt_key = make_storage_primary(tpm)?;
 
-    // Generate a random salt
-    let salt = Crypto::get_random(&SOFTWARE_PROVIDER, 20)?;
-    println!("Salt ({} bytes): {:?}", salt.len(), &salt[..8]);
+    // The salt is encrypted to whatever public area we nominate here, so nominating one we read
+    // over the same channel we are trying to protect would be pointless: a man in the middle who
+    // answers the ReadPublic learns the salt and forges every HMAC afterwards. This library
+    // therefore will not read it for us -- the trust decision has to be made explicitly.
+    //
+    // Here the key is one this very process just created under the owner hierarchy, so there is
+    // no channel in between for anyone to sit in, and `assume_trusted` is honest. Code adopting
+    // a key it did not create should pin the Name out of band and use
+    // `TrustedPublic::from_pinned_name` instead.
+    let salt_key_public = tpm.ReadPublic(&salt_key)?.outPublic;
+    let salt_key_public = TrustedPublic::assume_trusted(salt_key_public, &SOFTWARE_PROVIDER)?;
+    println!("Pinned salt key Name: {:?}", &salt_key_public.name()[..8]);
 
-    // Start a salted HMAC session.
-    // start_auth_session_ex will ReadPublic on the salt key, encrypt the salt
-    // with RSA-OAEP (label "SECRET"), and derive the session key via KDFa.
-    let sess = tpm.start_auth_session_ex(
-        &salt_key,                                  // tpmKey for salt encryption
-        &TPM_HANDLE::new(TPM_RH::NULL.get_value()), // no binding
+    let sess = tpm.start_salted_auth_session(
+        &salt_key,
+        &salt_key_public,
         TPM_SE::HMAC,
         TPM_ALG_ID::SHA256,
         TPMA_SESSION::continueSession,
         TPMT_SYM_DEF::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
-        &salt,
     )?;
     println!("Started salted HMAC session: {:?}", session_handle(&sess));
 
@@ -2626,13 +2656,12 @@ fn bound_session_inner(tpm: &mut Tpm2, owner_auth: &[u8]) -> Result<(), TpmError
     owner_handle.auth_value = owner_auth.to_vec();
 
     let sess = tpm.start_auth_session_ex(
-        &TPM_HANDLE::new(TPM_RH::NULL.get_value()), // no salt
+        None,                                         // unsalted
         &owner_handle,                                // bound to OWNER
         TPM_SE::HMAC,
         TPM_ALG_ID::SHA256,
         TPMA_SESSION::continueSession,
         TPMT_SYM_DEF::default(),
-        &[],                                          // no salt
     )?;
     println!("Started bound session (bound to OWNER): {:?}", session_handle(&sess));
 

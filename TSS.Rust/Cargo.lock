@@ -570,6 +570,7 @@ dependencies = [
  "sha1",
  "sha2",
  "sm3",
+ "subtle",
  "windows",
  "zeroize",
 ]

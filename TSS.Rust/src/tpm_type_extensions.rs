@@ -14,6 +14,78 @@ pub struct ActivationData {
     pub secret: Vec<u8>, // Encrypted seed (ENCRYPTED_SECRET)
 }
 
+/// A [`TPMT_PUBLIC`] the caller has decided to trust, paired with its locally derived Name.
+///
+/// # What this type does and does not mean
+///
+/// `TrustedPublic` records a **caller-asserted** trust decision and nothing more. It exists so
+/// that the decision is made once, in one greppable place, instead of being implied by whatever
+/// public area happened to be in scope at the call site.
+///
+/// It is **not** a channel-authentication mechanism: nothing here authenticates the transport
+/// the public area travelled over, and constructing one does not make a subsequent exchange
+/// with the TPM authenticated.
+///
+/// It is **not** proof of TPM residency: nothing here shows that the private half of this key
+/// is held by a TPM, or by *the* TPM you are talking to. A public area is just bytes, and the
+/// Name is a digest over those same bytes, so an adversary who chooses the public area also
+/// chooses its Name.
+///
+/// What it is worth depends entirely on where the expected Name came from:
+///
+/// * [`TrustedPublic::from_pinned_name`] is meaningful when the expected Name was obtained out
+///   of band — burned into an image, shipped in a signed manifest, recorded at enrolment time
+///   on a channel you trusted then. It rejects any public area that does not hash to that Name.
+/// * [`TrustedPublic::assume_trusted`] asserts trust with no evidence at all. It is the right
+///   call for a locally generated key you just created yourself, and the wrong call for
+///   anything that arrived over a channel an adversary can reach.
+#[derive(Clone, Debug)]
+pub struct TrustedPublic {
+    public: TPMT_PUBLIC,
+    name: Vec<u8>,
+}
+
+impl TrustedPublic {
+    /// Accept `public` only if it hashes to `expected_name`.
+    ///
+    /// The Name is recomputed locally with [`TPMT_PUBLIC::get_name`] and compared; a mismatch is
+    /// an error. The strength of the result is exactly the strength of `expected_name`'s
+    /// provenance — see the type-level documentation.
+    pub fn from_pinned_name(
+        public: TPMT_PUBLIC,
+        expected_name: &[u8],
+        crypto: &CryptoProvider,
+    ) -> Result<Self, TpmError> {
+        if expected_name.is_empty() {
+            return Err(TpmError::InvalidParameter);
+        }
+        public.verify_name(expected_name, crypto)?;
+        let name = public.get_name(crypto)?;
+        Ok(Self { public, name })
+    }
+
+    /// Accept `public` on the caller's say-so, with nothing checked.
+    ///
+    /// Deliberately loud, and deliberately easy to grep for. Reach for this only when the public
+    /// area cannot have been chosen by an adversary — a key this process just created, or one
+    /// read back over a channel that is already authenticated by other means. If you cannot
+    /// name the reason, use [`TrustedPublic::from_pinned_name`] instead.
+    pub fn assume_trusted(public: TPMT_PUBLIC, crypto: &CryptoProvider) -> Result<Self, TpmError> {
+        let name = public.get_name(crypto)?;
+        Ok(Self { public, name })
+    }
+
+    /// The public area.
+    pub fn public(&self) -> &TPMT_PUBLIC {
+        &self.public
+    }
+
+    /// The Name derived from the public area, `nameAlg || H_nameAlg(publicArea)`.
+    pub fn name(&self) -> &[u8] {
+        &self.name
+    }
+}
+
 impl TPMS_RSA_PARMS {
     /// The public exponent as big-endian bytes with no leading zeros.
     ///
@@ -51,6 +123,22 @@ impl TPMT_PUBLIC {
         Ok(pub_hash)
     }
 
+    /// Recompute this public area's Name and check it against `expected`.
+    ///
+    /// The Name of a TPM object is `nameAlg || H_nameAlg(publicArea)`, so it is a value the
+    /// caller can derive locally from the public area alone. Verifying it proves only that the
+    /// public area in hand is the one the expected Name commits to. It proves nothing about
+    /// where that public area came from, and nothing about the channel it arrived over.
+    pub fn verify_name(&self, expected: &[u8], crypto: &CryptoProvider) -> Result<(), TpmError> {
+        let actual = self.get_name(crypto)?;
+        if actual != expected {
+            return Err(TpmError::GenericError(
+                "TPMT_PUBLIC Name does not match the expected Name".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn get_signing_hash_alg(&self) -> Result<TPM_ALG_ID, TpmError> {
         let rsa_params = if let Some(TPMU_PUBLIC_PARMS::rsaDetail(rsa_params)) = &self.parameters {
             rsa_params
@@ -79,16 +167,17 @@ impl TPMT_PUBLIC {
         certify_response: &CertifyResponse,
     ) -> Result<bool, TpmError> {
         let key_hash_alg = self.get_signing_hash_alg()?;
-        let signature_hash_alg = if let Some(TPMU_SIGNATURE::rsassa(signature)) = &certify_response.signature {
-            signature.hash
-        } else {
-            return Crypto::validate_signature(
-                crypto,
-                self,
-                Vec::new(),
-                &certify_response.signature,
-            );
-        };
+        let signature_hash_alg =
+            if let Some(TPMU_SIGNATURE::rsassa(signature)) = &certify_response.signature {
+                signature.hash
+            } else {
+                return Crypto::validate_signature(
+                    crypto,
+                    self,
+                    Vec::new(),
+                    &certify_response.signature,
+                );
+            };
         if key_hash_alg != signature_hash_alg {
             return Ok(false);
         }
@@ -153,7 +242,9 @@ impl TPMT_PUBLIC {
             || sym_def.keyBits != 128
             || sym_def.mode != TPM_ALG_ID::CFB
         {
-            return Err(TpmError::NotSupported("Unsupported wrapping scheme".to_string()));
+            return Err(TpmError::NotSupported(
+                "Unsupported wrapping scheme".to_string(),
+            ));
         }
 
         // The seed is the same size as the nameAlg digest, per TPM 2.0 Part 1 "Credential
@@ -179,13 +270,13 @@ impl TPMT_PUBLIC {
         credential_with_size.extend_from_slice(&(credential.len() as u16).to_be_bytes());
         credential_with_size.extend_from_slice(credential);
 
-        // 3. Encrypt the credential 
+        // 3. Encrypt the credential
         let enc_credential = Crypto::cfb_xcrypt(
             crypto,
             true,
             &sym_key,
             &[0u8; 16], // Zero IV
-            &credential_with_size
+            &credential_with_size,
         )?;
 
         // 4. Generate the integrity HMAC key
@@ -203,13 +294,8 @@ impl TPMT_PUBLIC {
         let mut to_hmac = Vec::new();
         to_hmac.extend_from_slice(&enc_credential);
         to_hmac.extend_from_slice(activated_name);
-        
-        let integrity_hmac = Crypto::hmac(
-            crypto,
-            self.nameAlg,
-            &hmac_key,
-            &to_hmac
-        )?;
+
+        let integrity_hmac = Crypto::hmac(crypto, self.nameAlg, &hmac_key, &to_hmac)?;
 
         // Cleanup sensitive data
         seed.zeroize();
@@ -293,24 +379,25 @@ impl TPMT_PUBLIC {
     }
 
     // Performs RSA encryption of the given data using the public key
-    pub fn encrypt(
-        &self,
-        crypto: &CryptoProvider,
-        data: &[u8],
-    ) -> Result<Vec<u8>, TpmError> {
+    pub fn encrypt(&self, crypto: &CryptoProvider, data: &[u8]) -> Result<Vec<u8>, TpmError> {
         // Verify we have an RSA key with correct parameters
         let rsa_params = if let Some(TPMU_PUBLIC_PARMS::rsaDetail(params)) = &self.parameters {
             params
         } else {
-            return Err(TpmError::NotSupported("Only RSA encryption supported".to_string()));
+            return Err(TpmError::NotSupported(
+                "Only RSA encryption supported".to_string(),
+            ));
         };
 
         // Check symmetric definition
         let sym_def = &rsa_params.symmetric;
-        if sym_def.algorithm != TPM_ALG_ID::AES 
-            || sym_def.keyBits != 128 
-            || sym_def.mode != TPM_ALG_ID::CFB {
-            return Err(TpmError::NotSupported("Unsupported wrapping scheme".to_string()));
+        if sym_def.algorithm != TPM_ALG_ID::AES
+            || sym_def.keyBits != 128
+            || sym_def.mode != TPM_ALG_ID::CFB
+        {
+            return Err(TpmError::NotSupported(
+                "Unsupported wrapping scheme".to_string(),
+            ));
         }
 
         // Get RSA public key components
@@ -341,13 +428,17 @@ impl TPMT_PUBLIC {
         let rsa_params = if let Some(TPMU_PUBLIC_PARMS::rsaDetail(params)) = &self.parameters {
             params
         } else {
-            return Err(TpmError::NotSupported("Only RSA keys can encrypt session salt".to_string()));
+            return Err(TpmError::NotSupported(
+                "Only RSA keys can encrypt session salt".to_string(),
+            ));
         };
 
         let rsa_pub_n = if let Some(TPMU_PUBLIC_ID::rsa(unique)) = &self.unique {
             &unique.buffer
         } else {
-            return Err(TpmError::NotSupported("Only RSA keys can encrypt session salt".to_string()));
+            return Err(TpmError::NotSupported(
+                "Only RSA keys can encrypt session salt".to_string(),
+            ));
         };
 
         Crypto::rsa_oaep_encrypt(
@@ -545,7 +636,9 @@ impl TSS_KEY {
             if let Some(TPMU_PUBLIC_PARMS::rsaDetail(ref params)) = self.publicPart.parameters {
                 (params.keyBits as usize, params.exponent_bytes())
             } else {
-                return Err(TpmError::GenericError("Only RSA key creation is supported".to_string()));
+                return Err(TpmError::GenericError(
+                    "Only RSA key creation is supported".to_string(),
+                ));
             };
 
         let mut key = Crypto::rsa_generate_keypair(crypto, key_bits, &exponent)?;
@@ -574,16 +667,21 @@ impl TSS_KEY {
         digest: &[u8],
         hash_alg: TPM_ALG_ID,
     ) -> Result<TPMT_SIGNATURE, TpmError> {
-        let rsa_params = if let Some(TPMU_PUBLIC_PARMS::rsaDetail(ref params)) = self.publicPart.parameters {
-            params
-        } else {
-            return Err(TpmError::GenericError("Only RSA signing is supported".to_string()));
-        };
+        let rsa_params =
+            if let Some(TPMU_PUBLIC_PARMS::rsaDetail(ref params)) = self.publicPart.parameters {
+                params
+            } else {
+                return Err(TpmError::GenericError(
+                    "Only RSA signing is supported".to_string(),
+                ));
+            };
 
         let n_bytes = if let Some(TPMU_PUBLIC_ID::rsa(ref pub_key)) = self.publicPart.unique {
             pub_key.buffer.clone()
         } else {
-            return Err(TpmError::GenericError("No public key available".to_string()));
+            return Err(TpmError::GenericError(
+                "No public key available".to_string(),
+            ));
         };
 
         // Reconstruct RSA private key from modulus + prime p
@@ -676,7 +774,15 @@ mod tests {
             )));
         }
 
-        let sym_key = Crypto::kdfa(&SOFTWARE_PROVIDER, name_alg, seed, "STORAGE", activated_name, &[], 128)?;
+        let sym_key = Crypto::kdfa(
+            &SOFTWARE_PROVIDER,
+            name_alg,
+            seed,
+            "STORAGE",
+            activated_name,
+            &[],
+            128,
+        )?;
         let hmac_key = Crypto::kdfa(
             &SOFTWARE_PROVIDER,
             name_alg,
@@ -864,7 +970,10 @@ mod tests {
                 TpmError::GenericError("The ephemeral point is not on the curve".to_string())
             })?;
 
-        let z = diffie_hellman(private_key.to_nonzero_scalar(), ephemeral_public.as_affine());
+        let z = diffie_hellman(
+            private_key.to_nonzero_scalar(),
+            ephemeral_public.as_affine(),
+        );
 
         // The TPM is the responder, yet it still names the originator's point as partyU. Deriving
         // with the roles reversed would produce a different seed in silence, which is why this
@@ -926,7 +1035,11 @@ mod tests {
         let seed = ecc_recover_seed::<C>(&private_key, name_alg, &activation.secret)?;
         let recovered = activate_credential(&seed, name_alg, &activated_name, &activation)?;
 
-        assert_eq!(recovered, credential, "curve {:?}, nameAlg {:?}", curve, name_alg);
+        assert_eq!(
+            recovered, credential,
+            "curve {:?}, nameAlg {:?}",
+            curve, name_alg
+        );
         Ok(())
     }
 
