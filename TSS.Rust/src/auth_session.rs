@@ -300,14 +300,36 @@ impl Session {
     /// The TPM's rule, from `BuildSingleResponseAuth` in the reference implementation:
     /// a password session carries no response auth, and neither does a policy session on which
     /// `TPM2_PolicyPassword` has run — in both cases the TPM returns an empty `hmac` field.
-    /// Every other session gets one, and it must be verified: skipping verification on a policy
-    /// session leaves the response parameters unauthenticated even though the session had the
-    /// key material to authenticate them.
+    /// Every other session gets one, and this client checks it rather than ignoring it.
     ///
-    /// (The TPM has one further shortcut — it also returns an empty field when the HMAC key is
-    /// empty *and* the command's auth field was empty. This client never sends an empty auth
-    /// field for such a session, precisely so that the shortcut cannot be taken and the
-    /// response is always authenticated as far as the session's key material allows.)
+    /// What that check is worth depends on the session, and the difference is worth stating
+    /// plainly rather than glossing. The response tag is
+    /// `HMAC(hashAlg, sessionKey ‖ authValue, ...)`, so it authenticates the response only when
+    /// one of those two parts is secret:
+    ///
+    /// * a salted session, or one bound to an entity with a non-empty authValue, has a
+    ///   `sessionKey` derived from something an observer does not have — see
+    ///   [`Session::has_secret_key_material`];
+    /// * a session that folds in an authValue — an HMAC session authorizing an entity it is not
+    ///   bound to, or a policy session on which `TPM2_PolicyAuthValue` has run — is keyed on
+    ///   that authValue.
+    ///
+    /// A policy session that is unsalted, unbound and has run neither `PolicyAuthValue` nor
+    /// `PolicyPassword` has neither: `calc_session_key` returns before deriving anything, so
+    /// `session_key` is empty, and `includes_auth_value` is false. Its HMAC key is the empty
+    /// string, which anyone watching the exchange can key an HMAC with. Verifying that tag is a
+    /// corruption check, not authentication, and no amount of checking makes it more than that
+    /// — only salting or binding the session does.
+    ///
+    /// The rule is the same for all of them, because it has to be: which sessions carry a tag is
+    /// the TPM's decision, and a client that skipped the check for the cases above would also
+    /// skip it for every salted or `PolicyAuthValue` policy session, where the tag is the only
+    /// thing standing behind the response parameters.
+    ///
+    /// (The TPM has one further shortcut, observed on hardware rather than read out of the
+    /// reference implementation: an empty field also comes back when the HMAC key is empty *and*
+    /// the command's auth field was empty. This client never sends an empty auth field for such
+    /// a session, so the shortcut is not taken and there is always a tag to check.)
     pub fn expects_response_auth(&self) -> bool {
         !self.is_pwap() && !self.needs_password
     }
@@ -418,7 +440,7 @@ impl Session {
 
         // Derive key material: KDFa(hashAlg, sessionKey, "CFB", nonceNewer, nonceOlder, 256)
         // Produces key_size + 16 bytes (key + IV)
-        let num_bits = (key_size + 16) * 8;
+        let num_bits = (key_size + CFB_IV_SIZE) * 8;
         let key_info = Crypto::kdfa(
             crypto,
             self.hash_alg,
@@ -429,8 +451,7 @@ impl Session {
             num_bits,
         )?;
 
-        let aes_key = &key_info[..key_size];
-        let iv = &key_info[key_size..key_size + 16];
+        let (aes_key, iv) = split_cfb_key_material(&key_info, key_size)?;
 
         // For requests: encrypt (TPM will decrypt)
         // For responses: decrypt (TPM encrypted it)
@@ -445,6 +466,33 @@ fn trim_trailing_zeros(data: &[u8]) -> Vec<u8> {
         result.pop();
     }
     result
+}
+
+/// The AES-CFB initialisation vector is one AES block, whatever the key size.
+const CFB_IV_SIZE: usize = 16;
+
+/// Split the KDFa stream that keys parameter encryption into the AES key and the CFB
+/// initialisation vector.
+///
+/// The split is checked rather than sliced outright. KDFa is asked for exactly
+/// `key_size + CFB_IV_SIZE` octets and the in-crate implementation returns exactly that, so with
+/// the providers bundled here this can never come up short. [`CryptoProvider`] is a public struct
+/// of function pointers, though: KDFa is built on a caller-supplied HMAC, and a backend that
+/// returned fewer octets than it should would turn these two slices into a panic in a library
+/// whose every other failure is a [`TpmError`].
+fn split_cfb_key_material(key_info: &[u8], key_size: usize) -> Result<(&[u8], &[u8]), TpmError> {
+    let needed = key_size + CFB_IV_SIZE;
+    if key_info.len() < needed {
+        return Err(TpmError::GenericError(format!(
+            "Key derivation produced {} B of parameter encryption key material, but {} B are \
+             needed for an AES-{} key and its initialization vector. The configured crypto \
+             provider is not returning full length HMACs.",
+            key_info.len(),
+            needed,
+            key_size * 8
+        )));
+    }
+    Ok((&key_info[..key_size], &key_info[key_size..needed]))
 }
 
 #[cfg(test)]
@@ -661,5 +709,130 @@ mod tests {
         sess.needs_hmac = false;
         sess.needs_password = false;
         assert!(sess.expects_response_auth());
+    }
+
+    #[test]
+    fn an_unsalted_unbound_policy_session_authenticates_nothing() {
+        // What `expects_response_auth` documents, stated as an assertion. This session gets a
+        // response tag and this client checks it, but the key it checks with is the empty
+        // string: `calc_session_key` returned before deriving anything, and no authValue is
+        // folded in because neither PolicyAuthValue nor PolicyPassword has run. Anyone on the
+        // wire can produce a tag that verifies, so the check finds corruption, not forgery.
+        let mut sess = start(TPMA_SESSION::continueSession, &[], &null_handle()).unwrap();
+        sess.session_type = TPM_SE::POLICY;
+        sess.needs_hmac = false;
+        sess.needs_password = false;
+
+        let mut authorized = TPM_HANDLE::new(0x81000001);
+        authorized.set_auth(b"object-auth");
+
+        assert!(sess.expects_response_auth());
+        assert!(!sess.has_secret_key_material());
+        assert!(!sess.includes_auth_value(Some(&authorized)));
+        assert!(
+            sess.auth_hmac_key(Some(&authorized)).is_empty(),
+            "an unsalted, unbound policy session keys its HMAC on nothing at all"
+        );
+
+        // The contrast, so that this does not read as a claim about policy sessions in general:
+        // salt the same session and the key is a secret an observer does not have.
+        let salted = start(TPMA_SESSION::continueSession, SALT, &null_handle()).unwrap();
+        assert!(salted.has_secret_key_material());
+        assert!(!salted.auth_hmac_key(Some(&authorized)).is_empty());
+    }
+
+    /// Two bytes of hex per octet, for the vectors below.
+    fn hex(text: &str) -> Vec<u8> {
+        (0..text.len() / 2)
+            .map(|i| u8::from_str_radix(&text[2 * i..2 * i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// The session key against values computed outside this crate.
+    ///
+    /// Every other HMAC assertion in this repository keys itself on `session.session_key`, which
+    /// comes from `calc_session_key` — the code under test. Those tests agree with the client no
+    /// matter what it derives: swap the two nonces, or change the label, and they all still
+    /// pass. These vectors were produced independently from the formula in TPM 2.0 Part 1,
+    /// §11.4.10.2 and §19.6.8:
+    ///
+    /// ```text
+    ///   sessionKey := KDFa(hashAlg, bindAuth ‖ salt, "ATH", nonceTPM, nonceCaller, bits)
+    ///   KDFa(alg, key, label, contextU, contextV, bits) :=
+    ///       HMAC_alg(key, BE32(counter) ‖ label ‖ 0x00 ‖ contextU ‖ contextV ‖ BE32(bits))
+    /// ```
+    ///
+    /// so they pin the KDFa construction itself: the nonce *order* (nonceTPM is contextU, the
+    /// caller's nonce contextV), the label, its NUL terminator, and the trailing bit count.
+    #[test]
+    fn the_session_key_matches_an_independently_computed_kdfa_vector() {
+        // KDFa(SHA256, SALT, "ATH", [0xBB; 32], [0xAA; 32], 256), where the two nonces are the
+        // ones `start` hands to `Session::from_tpm_response`.
+        let salted = start(TPMA_SESSION::continueSession, SALT, &null_handle()).unwrap();
+        assert_eq!(
+            salted.session_key,
+            hex("39a0d74e4c4cc9d54088ec9565944c5e3332594b4a98c35be52ae224c86ab367")
+        );
+
+        // The same derivation with the nonces the other way round. It is here to show what the
+        // vector above rules out: a client that fed nonceCaller as contextU would agree with
+        // every HMAC test in this repository and with no TPM at all.
+        assert_ne!(
+            salted.session_key,
+            hex("12ed2216d596138fe107ef74730c868bbfd2b6e0d25c8801e60688585668c62e"),
+            "nonceTPM is contextU and nonceCaller is contextV, not the other way round"
+        );
+
+        // And with the "CFB" label, which is what parameter encryption derives with. A session
+        // key derived under the wrong label is the same length and useless.
+        assert_ne!(
+            salted.session_key,
+            hex("ad195ab7d2e025c8e96aa8b9e961ab0d8ee3b8f7650def7dec93427ec5d56772"),
+            "the session key is derived under the \"ATH\" label"
+        );
+
+        // bindAuth ‖ salt, with the bind entity's authValue first:
+        // KDFa(SHA256, b"bind-auth" ‖ SALT, "ATH", [0xBB; 32], [0xAA; 32], 256).
+        let mut bound = TPM_HANDLE::new(0x81000001);
+        bound.set_auth(b"bind-auth");
+        let bound = start(TPMA_SESSION::continueSession, SALT, &bound).unwrap();
+        assert_eq!(
+            bound.session_key,
+            hex("8ac20ea98b54559b4697be91175c84851ef430023f264e87c379bf6d6301edd9")
+        );
+    }
+}
+
+#[cfg(test)]
+mod cfb_key_material_tests {
+    use super::*;
+
+    #[test]
+    fn key_material_shorter_than_the_key_and_iv_is_an_error_not_a_panic() {
+        // Unreachable through the KDFa in this crate, which always returns exactly the number of
+        // octets it was asked for. It is reachable through a `CryptoProvider` supplied by
+        // someone else, and the answer there has to be an error rather than a panicking slice.
+        let err = split_cfb_key_material(&[0u8; 31], 16)
+            .expect_err("16 B of key and 16 B of IV do not fit in 31 B");
+        assert!(
+            format!("{}", err).contains("parameter encryption key material"),
+            "unexpected error: {}",
+            err
+        );
+
+        assert!(split_cfb_key_material(&[0u8; 47], 32).is_err());
+    }
+
+    #[test]
+    fn key_material_is_split_into_the_key_and_then_the_iv() {
+        let stream: Vec<u8> = (0..48u8).collect();
+
+        let (key, iv) = split_cfb_key_material(&stream, 16).unwrap();
+        assert_eq!(key, &stream[..16]);
+        assert_eq!(iv, &stream[16..32]);
+
+        let (key, iv) = split_cfb_key_material(&stream, 32).unwrap();
+        assert_eq!(key, &stream[..32]);
+        assert_eq!(iv, &stream[32..48]);
     }
 }

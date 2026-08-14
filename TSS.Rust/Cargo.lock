@@ -561,7 +561,6 @@ dependencies = [
  "elliptic-curve",
  "hmac",
  "lazy_static",
- "libc",
  "p256",
  "p384",
  "p521",

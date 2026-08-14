@@ -17,9 +17,6 @@ repository = "https://github.com/Kasher/TSS.MSR"
 non_camel_case_types = "allow"
 unused-parens = "allow"
 
-[lib]
-crate-type = ["cdylib", "lib"]
-
 [features]
 default = ["software-crypto"]
 
@@ -70,10 +67,7 @@ p384 = { version = "0.13", default-features = false, features = ["ecdh"], option
 p521 = { version = "0.13", default-features = false, features = ["ecdh"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61.1", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_TpmBaseServices", "Win32_Networking", "Win32_Networking_WinSock"] }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
+windows = { version = "0.61.1", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_TpmBaseServices"] }
 
 [[example]]
 name = "tpm_samples"

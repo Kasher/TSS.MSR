@@ -307,13 +307,16 @@ fn attestation(tpm: &mut Tpm2) -> Result<(), TpmError> {
     let signing_public = tpm.ReadPublic(&sig_key)?.outPublic;
 
     // Validating an attestation says nothing until the attestation key's provenance has been
-    // established somewhere else. Here this process created the signing key moments ago on a
-    // locally attached TPM, so there is no channel for anyone to sit in and `assume_trusted` is
-    // honest. Code attesting a TPM it does not own has no such luxury: establish the key out of
-    // band first - activate a credential against an endorsement key with a manufacturer
-    // certificate, or validate an AK certificate chain - and pass the Name that yields to
+    // established somewhere else. There is something to establish it against here: TPM2_Load
+    // returned this key's Name, and this library checked that Name against the public area it
+    // sent, so the Name is already in `sig_key`. Pinning against it costs nothing and is a real
+    // check - it rejects a resource manager that answers this ReadPublic with a different key.
+    //
+    // Code attesting a TPM it does not own has to obtain that Name from somewhere else entirely:
+    // activate a credential against an endorsement key with a manufacturer certificate, or
+    // validate an AK certificate chain, and pass the Name that yields to
     // `TrustedPublic::from_activated_credential` or `TrustedPublic::from_pinned_name`.
-    let signing_key = TrustedPublic::assume_trusted(signing_public, &SOFTWARE_PROVIDER)?;
+    let signing_key = TrustedPublic::from_pinned_name(signing_public, &sig_key.get_name()?, &SOFTWARE_PROVIDER)?;
 
     signing_key.validate_certify(&SOFTWARE_PROVIDER, &certified_public, &key_nonce, &key_quote)?;
     println!("Key certification signature verification SUCCESSFUL! ");
@@ -2096,9 +2099,12 @@ fn session_encryption_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     // nominate, and never appears on the wire in the clear.
     let salt_key = make_storage_primary(tpm)?;
     let salt_key_public = tpm.ReadPublic(&salt_key)?.outPublic;
-    // A key this process just created: nothing untrusted stands between us and it. Adopting a
-    // key from elsewhere means pinning its Name out of band and using `from_pinned_name`.
-    let salt_key_public = TrustedPublic::assume_trusted(salt_key_public, &SOFTWARE_PROVIDER)?;
+    // TPM2_CreatePrimary already returned this key's Name, and this library checked it against
+    // the public area the same command returned, so there is something to pin against and no
+    // reason to assert trust bare. `from_pinned_name` recomputes the Name of what ReadPublic
+    // answered and rejects it unless it matches. Adopting a key this process did not create means
+    // obtaining its Name from outside the channel - an enrolment record, a signed manifest.
+    let salt_key_public = TrustedPublic::from_pinned_name(salt_key_public, &salt_key.get_name()?, &SOFTWARE_PROVIDER)?;
 
     // Show what the library now refuses, so the reason is on the page rather than buried in a
     // doc comment somewhere.
@@ -2194,7 +2200,9 @@ fn policy_signed_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
             })),
             unique: Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA::default())),
         },
-        ..Default::default()
+        // Spelled out rather than filled in from Default::default(): TSS_KEY zeroizes
+        // privatePart on drop, and a type with a Drop cannot have fields moved out of it.
+        privatePart: Vec::new(),
     };
     sw_key.create_key(&SOFTWARE_PROVIDER)?;
     println!("Created software RSA-2048 signing key");
@@ -2303,7 +2311,9 @@ fn policy_authorize_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
             })),
             unique: Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA::default())),
         },
-        ..Default::default()
+        // Spelled out rather than filled in from Default::default(): TSS_KEY zeroizes
+        // privatePart on drop, and a type with a Drop cannot have fields moved out of it.
+        privatePart: Vec::new(),
     };
     sw_key.create_key(&SOFTWARE_PROVIDER)?;
     println!("Created authorizing SW key");
@@ -2575,9 +2585,10 @@ fn policy_tree_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 }
 
 /// Demonstrates a salted (seeded) auth session. The salt is generated inside
-/// `start_salted_auth_session`, sized to the session hash, and RSA-OAEP encrypted
-/// to a storage primary's public key. That gives the session key an input an
-/// eavesdropper does not have, which is what parameter encryption and HMAC integrity need.
+/// `start_salted_auth_session`, sized to the digest of the salt key's `nameAlg` -- the size the
+/// TPM requires, which is not necessarily the session hash -- and RSA-OAEP encrypted to a storage
+/// primary's public key. That gives the session key an input an eavesdropper does not have, which
+/// is what parameter encryption and HMAC integrity need.
 fn seeded_session_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     announce("SeededSession");
 
@@ -2589,12 +2600,17 @@ fn seeded_session_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     // answers the ReadPublic learns the salt and forges every HMAC afterwards. This library
     // therefore will not read it for us -- the trust decision has to be made explicitly.
     //
-    // Here the key is one this very process just created under the owner hierarchy, so there is
-    // no channel in between for anyone to sit in, and `assume_trusted` is honest. Code adopting
-    // a key it did not create should pin the Name out of band and use
-    // `TrustedPublic::from_pinned_name` instead.
+    // TPM2_CreatePrimary already returned this key's Name, so the decision here can rest on a
+    // check rather than on an assertion: `from_pinned_name` rejects a ReadPublic answered with a
+    // different key. Be precise about what that is worth. This is a key this process created
+    // moments ago on a locally attached TPM, and on Windows a resource manager still sits between
+    // this process and the chip -- it was equally present when the key was created, so a
+    // compromised one could have answered both. What the pinning buys is that the two answers
+    // must agree; what makes the residual risk acceptable is that an adversary in that position
+    // already has privileged local access. Code adopting a key it did not create has to get the
+    // Name from outside the channel entirely and pin against that.
     let salt_key_public = tpm.ReadPublic(&salt_key)?.outPublic;
-    let salt_key_public = TrustedPublic::assume_trusted(salt_key_public, &SOFTWARE_PROVIDER)?;
+    let salt_key_public = TrustedPublic::from_pinned_name(salt_key_public, &salt_key.get_name()?, &SOFTWARE_PROVIDER)?;
     println!("Pinned salt key Name: {:?}", &salt_key_public.name()[..8]);
 
     let sess = tpm.start_salted_auth_session(

@@ -163,274 +163,27 @@ pub trait TpmDevice {
     fn get_tpm_info(&self) -> u32;
 }
 
-// /// TPM device implementation for TCP connection (simulator)
-// pub struct TpmTcpDevice {
-//     host_name: String,
-//     port: u16,
-//     command_socket: Option<TcpStream>,
-//     signal_socket: Option<TcpStream>,
-//     locality: u8,
-//     tpm_info: u32,
-// }
+/// How a [`TbsContext`] closes the handle it owns.
+///
+/// The close is reached through a function pointer rather than called directly so that the unit
+/// tests, which wrap handles TBS has never issued, can substitute a recorder for that one handle
+/// instead of compiling the close out of the whole build. Every context TBS did issue carries
+/// [`tbs_context_close`] and is therefore closed for real, in test builds as well as in
+/// production ones.
+#[cfg(target_os = "windows")]
+type TbsCloseFn = unsafe fn(*mut c_void) -> u32;
 
-// impl TpmTcpDevice {
-//     /// Create a new TpmTcpDevice
-//     pub fn new(host_name: String, port: u16) -> Self {
-//         TpmTcpDevice {
-//             host_name,
-//             port,
-//             command_socket: None,
-//             signal_socket: None,
-//             locality: 0,
-//             tpm_info: 0,
-//         }
-//     }
-
-//     /// Set the target for the TCP connection
-//     pub fn set_target(&mut self, host_name: String, port: u16) {
-//         self.host_name = host_name;
-//         self.port = port;
-//         self.locality = 0;
-//     }
-
-//     /// Connect to the specified host and port
-//     pub fn connect_to(&mut self, host_name: String, port: u16) -> Result<bool, TpmError> {
-//         self.set_target(host_name, port);
-//         self.connect()
-//     }
-
-//     // Helper function to send an integer in network byte order
-//     fn send_int(socket: &mut TcpStream, value: u32) -> Result<(), TpmError> {
-//         let value_bytes = value.to_be_bytes();
-//         socket
-//             .write_all(&value_bytes)
-//             .map_err(|e| TpmError::IoError(e.to_string()))
-//     }
-
-//     // Helper function to receive an integer in network byte order
-//     fn receive_int(socket: &mut TcpStream) -> Result<u32, TpmError> {
-//         let mut buffer = [0u8; 4];
-//         socket
-//             .read_exact(&mut buffer)
-//             .map_err(|e| TpmError::IoError(e.to_string()))?;
-//         Ok(u32::from_be_bytes(buffer))
-//     }
-
-//     // Helper function to get acknowledgement from server
-//     fn get_ack(socket: &mut TcpStream) -> Result<(), TpmError> {
-//         let end_tag = Self::receive_int(socket)?;
-
-//         if end_tag != 0 {
-//             if end_tag == 1 {
-//                 return Err(TpmError::CommandFailed);
-//             } else {
-//                 return Err(TpmError::BadEndTag);
-//             }
-//         }
-
-//         Ok(())
-//     }
-
-//     // Helper function to send a command and get acknowledgement
-//     fn send_cmd_and_get_ack(socket: &mut TcpStream, cmd: TcpTpmCommand) -> Result<(), TpmError> {
-//         Self::send_int(socket, cmd as u32)?;
-//         Self::get_ack(socket)
-//     }
-
-//     // Helper function to receive a variable-length array
-//     fn recv_var_array(socket: &mut TcpStream) -> Result<Vec<u8>, TpmError> {
-//         let len = Self::receive_int(socket)? as usize;
-//         let mut buffer = vec![0u8; len];
-
-//         socket
-//             .read_exact(&mut buffer)
-//             .map_err(|e| TpmError::IoError(e.to_string()))?;
-
-//         Ok(buffer)
-//     }
-// }
-
-// impl TpmDevice for TpmTcpDevice {
-//     fn connect(&mut self) -> Result<bool, TpmError> {
-//         // Close any existing connections
-//         self.close();
-
-//         // Connect to the signal port first
-//         let signal_addr = format!("{}:{}", self.host_name, self.port + 1);
-//         let signal_socket = TcpStream::connect(signal_addr)
-//             .map_err(|e| TpmError::IoError(format!("Failed to connect to signal port: {}", e)))?;
-
-//         // Connect to the command port
-//         let command_addr = format!("{}:{}", self.host_name, self.port);
-//         let command_socket = TcpStream::connect(command_addr)
-//             .map_err(|e| TpmError::IoError(format!("Failed to connect to command port: {}", e)))?;
-
-//         // Set read and write timeouts
-//         command_socket
-//             .set_read_timeout(Some(Duration::from_secs(5)))
-//             .map_err(|e| TpmError::IoError(e.to_string()))?;
-//         signal_socket
-//             .set_read_timeout(Some(Duration::from_secs(5)))
-//             .map_err(|e| TpmError::IoError(e.to_string()))?;
-
-//         // Store the sockets
-//         self.command_socket = Some(command_socket);
-//         self.signal_socket = Some(signal_socket);
-
-//         // Make sure the TPM protocol is running
-//         if let Some(mut cmd_socket) = self.command_socket.as_ref().map(|s| s.try_clone().unwrap()) {
-//             // Client version is 1
-//             const CLIENT_VERSION: u32 = 1;
-
-//             Self::send_int(&mut cmd_socket, TcpTpmCommand::RemoteHandshake as u32)?;
-//             Self::send_int(&mut cmd_socket, CLIENT_VERSION)?;
-
-//             let endpoint_ver = Self::receive_int(&mut cmd_socket)?;
-//             if endpoint_ver != CLIENT_VERSION {
-//                 return Err(TpmError::IncompatibleTpm);
-//             }
-
-//             // Get the endpoint TPM properties
-//             self.tpm_info = Self::receive_int(&mut cmd_socket)?;
-
-//             Self::get_ack(&mut cmd_socket)?;
-
-//             Ok(true)
-//         } else {
-//             Err(TpmError::NotConnected)
-//         }
-//     }
-
-//     fn close(&mut self) {
-//         // Close command socket if open
-//         if let Some(_) = self.command_socket.take() {
-//             // Socket will be closed when dropped
-//         }
-
-//         // Close signal socket if open
-//         if let Some(_) = self.signal_socket.take() {
-//             // Socket will be closed when dropped
-//         }
-//     }
-
-//     fn dispatch_command(&mut self, cmd_buf: &[u8]) -> Result<(), TpmError> {
-//         if let Some(mut socket) = self.command_socket.as_ref().map(|s| s.try_clone().unwrap()) {
-//             // Send the command header
-//             Self::send_int(&mut socket, TcpTpmCommand::SendCommand as u32)?;
-//             socket
-//                 .write_all(&[self.locality])
-//                 .map_err(|e| TpmError::IoError(e.to_string()))?;
-//             Self::send_int(&mut socket, cmd_buf.len() as u32)?;
-
-//             // Send the command data
-//             socket
-//                 .write_all(cmd_buf)
-//                 .map_err(|e| TpmError::IoError(e.to_string()))?;
-
-//             Ok(())
-//         } else {
-//             Err(TpmError::NotConnected)
-//         }
-//     }
-
-//     fn get_response(&mut self) -> Result<Vec<u8>, TpmError> {
-//         if let Some(mut socket) = self.command_socket.as_ref().map(|s| s.try_clone().unwrap()) {
-//             // Get the response
-//             let resp = Self::recv_var_array(&mut socket)?;
-
-//             // Get the terminating ACK
-//             let ack = Self::receive_int(&mut socket)?;
-//             if ack != 0 {
-//                 return Err(TpmError::BadEndTag);
-//             }
-
-//             Ok(resp)
-//         } else {
-//             Err(TpmError::NotConnected)
-//         }
-//     }
-
-//     fn response_is_ready(&self) -> Result<bool, TpmError> {
-//         if let Some(socket) = &self.command_socket {
-//             // Create a read set with just this socket
-//             let mut read_set = [socket
-//                 .try_clone()
-//                 .map_err(|e| TpmError::IoError(e.to_string()))?];
-
-//             // Check if there's data to read with a zero timeout
-//             match socket::select(
-//                 &mut read_set,
-//                 &mut [],
-//                 &mut [],
-//                 Some(&Duration::from_secs(0)),
-//             ) {
-//                 Ok(1) => Ok(true),
-//                 Ok(_) => Ok(false),
-//                 Err(e) => Err(TpmError::IoError(e.to_string())),
-//             }
-//         } else {
-//             Err(TpmError::NotConnected)
-//         }
-//     }
-
-//     fn power_ctl(&mut self, on: bool) -> Result<(), TpmError> {
-//         if let Some(mut socket) = self.signal_socket.as_ref().map(|s| s.try_clone().unwrap()) {
-//             let power_cmd = if on {
-//                 TcpTpmCommand::SignalPowerOn
-//             } else {
-//                 TcpTpmCommand::SignalPowerOff
-//             };
-
-//             let nv_cmd = if on {
-//                 TcpTpmCommand::SignalNvOn
-//             } else {
-//                 TcpTpmCommand::SignalNvOff
-//             };
-
-//             Self::send_cmd_and_get_ack(&mut socket, power_cmd)?;
-//             Self::send_cmd_and_get_ack(&mut socket, nv_cmd)?;
-
-//             Ok(())
-//         } else {
-//             Err(TpmError::NotConnected)
-//         }
-//     }
-
-//     fn assert_physical_presence(&mut self, on: bool) -> Result<(), TpmError> {
-//         if let Some(mut socket) = self.signal_socket.as_ref().map(|s| s.try_clone().unwrap()) {
-//             let pp_cmd = if on {
-//                 TcpTpmCommand::SignalPPOn
-//             } else {
-//                 TcpTpmCommand::SignalPPOff
-//             };
-
-//             Self::send_cmd_and_get_ack(&mut socket, pp_cmd)
-//         } else {
-//             Err(TpmError::NotConnected)
-//         }
-//     }
-
-//     fn set_locality(&mut self, locality: u32) -> Result<(), TpmError> {
-//         if locality > 255 {
-//             return Err(TpmError::InvalidParameter);
-//         }
-
-//         self.locality = locality as u8;
-//         Ok(())
-//     }
-
-//     fn platform_available(&self) -> bool {
-//         self.has_flag(TpmConnInfo::TpmPlatformAvailable as u32)
-//     }
-
-//     fn has_flag(&self, flag: u32) -> bool {
-//         (self.tpm_info & flag) != 0
-//     }
-
-//     fn get_tpm_info(&self) -> u32 {
-//         self.tpm_info
-//     }
-// }
+/// Closes a TBS context. The default [`TbsCloseFn`] of every [`TbsContext`].
+///
+/// # Safety
+///
+/// `handle` must be a context returned by a successful `Tbsi_Context_Create` that has not been
+/// closed already.
+#[cfg(target_os = "windows")]
+unsafe fn tbs_context_close(handle: *mut c_void) -> u32 {
+    // SAFETY: forwarded from this function's own contract.
+    unsafe { Tbsip_Context_Close(handle) }
+}
 
 /// A TBS (TPM Base Services) context handle together with its ownership.
 ///
@@ -441,6 +194,9 @@ pub trait TpmDevice {
 struct TbsContext {
     handle: *mut c_void,
     owned: bool,
+    /// Applied to `handle` on drop when `owned`. Both constructors set the real TBS close; only a
+    /// unit test, hand-building a context over a handle of its own, substitutes anything else.
+    close: TbsCloseFn,
 }
 
 #[cfg(target_os = "windows")]
@@ -480,6 +236,7 @@ impl TbsContext {
         Ok(Self {
             handle,
             owned: true,
+            close: tbs_context_close,
         })
     }
 
@@ -496,6 +253,7 @@ impl TbsContext {
         Ok(Self {
             handle,
             owned: false,
+            close: tbs_context_close,
         })
     }
 
@@ -511,33 +269,36 @@ impl Drop for TbsContext {
             return;
         }
 
-        // The unit tests wrap dangling handles that must never reach TBS, so under `cfg(test)`
-        // the close is only recorded. A unit test must therefore never open a real context.
-        #[cfg(test)]
-        tbs_close_log::record();
-
-        // SAFETY: `handle` came from a successful `Tbsi_Context_Create` in `create`, which is the
-        // only constructor that sets `owned`. `TbsContext` is neither `Clone` nor `Copy`, so this
-        // is the only value holding that handle, and `Drop` runs at most once - meeting the TBS
-        // requirement of exactly one close per created context.
-        #[cfg(not(test))]
+        // SAFETY: `handle` came from a successful `Tbsi_Context_Create` in `create`, the only
+        // constructor that sets `owned` on a context carrying the real close; a context carrying
+        // any other close came from a unit test that built it over a handle of its own.
+        // `TbsContext` is neither `Clone` nor `Copy`, so this is the only value holding that
+        // handle, and `Drop` runs at most once - meeting the TBS requirement of exactly one close
+        // per created context.
         unsafe {
-            Tbsip_Context_Close(self.handle);
+            (self.close)(self.handle);
         }
     }
 }
 
-/// Records context closes for the unit tests, which cannot open a real TBS context.
+/// The [`TbsCloseFn`] the unit tests substitute for handles TBS has never issued: it records the
+/// close and touches nothing.
 #[cfg(all(test, target_os = "windows"))]
 mod tbs_close_log {
     use std::cell::Cell;
+    use std::os::raw::c_void;
 
     thread_local! {
         static CLOSES: Cell<usize> = const { Cell::new(0) };
     }
 
-    pub(super) fn record() {
+    /// # Safety
+    ///
+    /// None: `handle` is never dereferenced, and no TBS call is made. The signature exists only
+    /// to match [`super::TbsCloseFn`].
+    pub(super) unsafe fn record_close(_handle: *mut c_void) -> u32 {
         CLOSES.with(|closes| closes.set(closes.get() + 1));
+        super::TBS_SUCCESS
     }
 
     pub(super) fn count() -> usize {
@@ -681,7 +442,10 @@ impl TpmDevice for TpmTbsDevice {
             return Err(TpmError::NoResponse);
         }
 
-        let resp = self.result_buffer[0..self.res_size as usize].to_vec();
+        // TBS wrote this length, and it is bounded by the buffer length handed to it, but the
+        // clamp costs nothing and keeps a wrong length from panicking here.
+        let res_size = (self.res_size as usize).min(self.result_buffer.len());
+        let resp = self.result_buffer[0..res_size].to_vec();
         self.res_size = 0;
 
         Ok(resp)
@@ -726,11 +490,26 @@ mod windows_tests {
             context: Some(TbsContext {
                 handle: context,
                 owned: true,
+                // The handle above is not a TBS context, so it must not reach TBS. This is the
+                // only place that substitutes anything for the real close.
+                close: tbs_close_log::record_close,
             }),
             result_buffer: [0; 4096],
             res_size: 0,
             tpm_info: TpmConnInfo::TpmTbsConn as u32,
         }
+    }
+
+    /// The substitution above is confined to contexts a test builds by hand: anything TBS itself
+    /// issued goes through a constructor, and a constructor always installs the real close.
+    #[test]
+    fn constructed_contexts_close_through_tbs() {
+        let context = unsafe { TbsContext::borrowed(fake_context()) }.unwrap();
+
+        assert!(std::ptr::fn_addr_eq(
+            context.close,
+            tbs_context_close as TbsCloseFn
+        ));
     }
 
     #[test]
@@ -896,7 +675,10 @@ impl TpmTbsDevice {
 #[cfg(target_os = "linux")]
 impl TpmDevice for TpmTbsDevice {
     fn connect(&mut self) -> Result<bool, TpmError> {
-        if self.tpm_info != 0 {
+        // Connectedness is the presence of the handle commands travel over, which is the same
+        // test the Windows implementation makes on its TBS context. `tpm_info` describes a
+        // connection; it is not the connection itself.
+        if self.dev_tpm.is_some() || self.socket.is_some() {
             return Ok(true); // Already connected
         }
 
@@ -1126,174 +908,3 @@ impl TpmDevice for TpmTbsDevice {
         0
     }
 }
-
-// /// Socket utility module
-// mod socket {
-//     use std::io;
-//     use std::net::TcpStream;
-//     use std::time::Duration;
-
-//     #[cfg(unix)]
-//     pub fn select(
-//         read: &mut [TcpStream],
-//         write: &mut [TcpStream],
-//         except: &mut [TcpStream],
-//         timeout: Option<&Duration>,
-//     ) -> io::Result<usize> {
-//         use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
-//         use std::os::unix::io::AsRawFd;
-
-//         unsafe {
-//             let mut read_fds: fd_set = std::mem::zeroed();
-//             let mut write_fds: fd_set = std::mem::zeroed();
-//             let mut except_fds: fd_set = std::mem::zeroed();
-
-//             FD_ZERO(&mut read_fds);
-//             FD_ZERO(&mut write_fds);
-//             FD_ZERO(&mut except_fds);
-
-//             let mut max_fd = 0;
-
-//             for stream in read.iter() {
-//                 let fd = stream.as_raw_fd();
-//                 FD_SET(fd, &mut read_fds);
-//                 max_fd = std::cmp::max(max_fd, fd);
-//             }
-
-//             for stream in write.iter() {
-//                 let fd = stream.as_raw_fd();
-//                 FD_SET(fd, &mut write_fds);
-//                 max_fd = std::cmp::max(max_fd, fd);
-//             }
-
-//             for stream in except.iter() {
-//                 let fd = stream.as_raw_fd();
-//                 FD_SET(fd, &mut except_fds);
-//                 max_fd = std::cmp::max(max_fd, fd);
-//             }
-
-//             let mut tv: timeval = std::mem::zeroed();
-//             let tv_ptr = if let Some(timeout) = timeout {
-//                 tv.tv_sec = timeout.as_secs() as _;
-//                 tv.tv_usec = (timeout.subsec_micros()) as _;
-//                 &mut tv as *mut timeval
-//             } else {
-//                 std::ptr::null_mut()
-//             };
-
-//             let result = select(
-//                 max_fd + 1,
-//                 &mut read_fds,
-//                 &mut write_fds,
-//                 &mut except_fds,
-//                 tv_ptr,
-//             );
-
-//             if result < 0 {
-//                 return Err(io::Error::last_os_error());
-//             }
-
-//             // Count how many are ready
-//             let mut ready_count = 0;
-
-//             for stream in read.iter() {
-//                 if FD_ISSET(stream.as_raw_fd(), &read_fds) {
-//                     ready_count += 1;
-//                 }
-//             }
-
-//             for stream in write.iter() {
-//                 if FD_ISSET(stream.as_raw_fd(), &write_fds) {
-//                     ready_count += 1;
-//                 }
-//             }
-
-//             for stream in except.iter() {
-//                 if FD_ISSET(stream.as_raw_fd(), &except_fds) {
-//                     ready_count += 1;
-//                 }
-//             }
-
-//             Ok(ready_count)
-//         }
-//     }
-
-//     #[cfg(windows)]
-//     pub fn select(
-//         read: &mut [TcpStream],
-//         write: &mut [TcpStream],
-//         except: &mut [TcpStream],
-//         timeout: Option<&Duration>,
-//     ) -> io::Result<usize> {
-//         use std::os::windows::io::AsRawSocket;
-//         use windows::Win32::Networking::WinSock::{
-//             fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO,
-//         };
-
-//         unsafe {
-//             let mut read_fds: fd_set = std::mem::zeroed();
-//             let mut write_fds: fd_set = std::mem::zeroed();
-//             let mut except_fds: fd_set = std::mem::zeroed();
-
-//             FD_ZERO(&mut read_fds);
-//             FD_ZERO(&mut write_fds);
-//             FD_ZERO(&mut except_fds);
-
-//             for stream in read.iter() {
-//                 FD_SET(stream.as_raw_socket(), &mut read_fds);
-//             }
-
-//             for stream in write.iter() {
-//                 FD_SET(stream.as_raw_socket(), &mut write_fds);
-//             }
-
-//             for stream in except.iter() {
-//                 FD_SET(stream.as_raw_socket(), &mut except_fds);
-//             }
-
-//             let mut tv: timeval = std::mem::zeroed();
-//             let tv_ptr = if let Some(timeout) = timeout {
-//                 tv.tv_sec = timeout.as_secs() as i32;
-//                 tv.tv_usec = (timeout.subsec_micros()) as i32;
-//                 &mut tv as *mut timeval
-//             } else {
-//                 std::ptr::null_mut()
-//             };
-
-//             let result = select(
-//                 0, // ignored on Windows
-//                 &mut read_fds,
-//                 &mut write_fds,
-//                 &mut except_fds,
-//                 tv_ptr,
-//             );
-
-//             if result == -1 {
-//                 return Err(io::Error::last_os_error());
-//             }
-
-//             // Count how many are ready
-//             let mut ready_count = 0;
-
-//             for stream in read.iter() {
-//                 if FD_ISSET(stream.as_raw_socket(), &read_fds) {
-//                     ready_count += 1;
-//                 }
-//             }
-
-//             for stream in write.iter() {
-//                 if FD_ISSET(stream.as_raw_socket(), &write_fds) {
-//                     ready_count += 1;
-//                 }
-//             }
-
-//             for stream in except.iter() {
-//                 if FD_ISSET(stream.as_raw_socket(), &except_fds) {
-//                     ready_count += 1;
-//                 }
-//             }
-
-//             Ok(ready_count as usize)
-//         }
-//     }
-// }

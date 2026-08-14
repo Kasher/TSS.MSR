@@ -246,6 +246,13 @@ pub struct Tpm2 {
     /// Input handles for current command
     in_handles: Vec<TPM_HANDLE>,
 
+    /// How many of `in_handles` the current command authorizes, which is not always all of them:
+    /// `TPM2_Duplicate` names a new parent it does not authorize, `TPM2_PolicyNV` an NV index and
+    /// a policy session it does not authorize. Session *i* authorizes handle *i* only while *i*
+    /// is below this count (TPM 2.0 Part 1, §19.6.4), and both the command and the response HMAC
+    /// have to agree on that or they fold in different authValues.
+    num_auth_handles: u16,
+
     /// Auth value for objects
     object_in_auth: Vec<u8>,
 
@@ -310,6 +317,7 @@ impl Tpm2 {
             current_session_tag: None,
             pending_command: None,
             in_handles: Vec::new(),
+            num_auth_handles: 0,
             object_in_auth: Vec::new(),
             object_in_name: Vec::new(),
             command_object_public: None,
@@ -347,7 +355,11 @@ impl Tpm2 {
 
     /// How many times [`Tpm2::dispatch`] resends a command the TPM answered with `TPM_RC_RETRY`
     /// before giving up on it.
-    const MAX_RETRIES: u32 = 8;
+    ///
+    /// Public because [`Tpm2::dispatch`] documents its own behaviour in terms of it: a caller
+    /// budgeting for the worst case a command can cost needs the bound, not a promise that one
+    /// exists.
+    pub const MAX_RETRIES: u32 = 8;
 
     /// How long to wait before resending a command the TPM answered with `TPM_RC_RETRY`. It
     /// doubles on each further resend, up to [`Tpm2::RETRY_MAX_DELAY`], so the whole sequence
@@ -435,6 +447,7 @@ impl Tpm2 {
 
         // Determine session tag based on whether we need authorization
         let num_auth_handles = req.num_auth_handles();
+        self.num_auth_handles = num_auth_handles;
         let has_sessions = num_auth_handles > 0 || self.sessions.is_some();
         self.current_session_tag = if has_sessions {
             Some(TPM_ST::SESSIONS)
@@ -992,9 +1005,18 @@ impl Tpm2 {
             auth_hash,
         )?;
 
-        Session::from_tpm_response(
+        // From here on the TPM holds a loaded session, so every exit has to account for it.
+        // `Session::from_tpm_response` still has two ways to fail — `calc_session_key` rejects a
+        // hash algorithm with no digest size, and the constructor refuses parameter encryption
+        // on a session with no secret key material — and both leave the session occupying one of
+        // the two or three slots a TPM typically has for loaded sessions, with no handle left
+        // anywhere for the caller to flush. That refusal is not hypothetical: the sample in
+        // `examples/tpm_samples.rs` provokes it deliberately on every run and then loads two
+        // more sessions.
+        let handle = resp.handle;
+        match Session::from_tpm_response(
             &self.crypto,
-            resp.handle,
+            handle.clone(),
             session_type,
             auth_hash,
             nonce_caller,
@@ -1003,7 +1025,13 @@ impl Tpm2 {
             symmetric,
             &salt,
             bind,
-        )
+        ) {
+            Ok(session) => Ok(session),
+            Err(err) => {
+                self.flush_orphaned_handle(&handle);
+                Err(err)
+            }
+        }
     }
 
     /// Set a session on this Tpm2 for the next command.
@@ -1033,7 +1061,36 @@ impl Tpm2 {
         self.current_cmd_code = None;
         self.current_session_tag = None;
         self.command_object_public = None;
+        self.num_auth_handles = 0;
         // Clear other command-specific state
+    }
+
+    /// Flush an object or session the TPM has loaded but this client is about to lose the handle
+    /// to, on a path that is failing for some other reason.
+    ///
+    /// A TPM has room for only a handful of loaded sessions and transient objects, and nothing
+    /// reclaims one whose handle no caller ever sees: it occupies its slot until the TPM is
+    /// reset. Two paths here can produce exactly that — a `TPM2_StartAuthSession` whose response
+    /// this client then refuses to build a `Session` from, and a `TPM2_Load` or
+    /// `TPM2_CreatePrimary` whose reported Name fails the consistency check — and in both the
+    /// command itself succeeded, so the TPM has already done the loading.
+    ///
+    /// The flush is best effort. It is issued for its side effect on the TPM, and its outcome
+    /// must not displace the failure that is on its way to the caller, so the invocation state
+    /// it needs is cleared first and the error reporting it would otherwise overwrite is put
+    /// back afterwards.
+    fn flush_orphaned_handle(&mut self, handle: &TPM_HANDLE) {
+        let response_code = self.last_response_code;
+        let error = self.last_error.take();
+
+        // `FlushContext` dispatches a command of its own, which refuses to run while another
+        // command is still marked as in flight.
+        self.clear_invocation_state();
+        self.sessions = None;
+        let _ = self.FlushContext(handle);
+
+        self.last_response_code = response_code;
+        self.last_error = error;
     }
 
     /// Set the auth value for an admin hierarchy handle.
@@ -1068,6 +1125,31 @@ impl Tpm2 {
             val if val == TPM_RH::PLATFORM.get_value() => h.set_auth(&admin_platform.auth_value),
             val if val == TPM_RH::LOCKOUT.get_value() => h.set_auth(&admin_lockout.auth_value),
             _ => {} // No auth value change needed
+        }
+    }
+
+    /// The handle whose authValue session `index` folds into its HMAC key, if any.
+    ///
+    /// A command's handle area starts with the handles it authorizes and may continue with
+    /// handles it does not: `TPM2_Duplicate`'s `newParentHandle`, `TPM2_PolicyNV`'s `nvIndex`
+    /// and `policySession`. Session *i* is the authorization for handle *i* only while *i* is
+    /// below `num_auth_handles`; a session past that point authorizes nothing and folds in no
+    /// authValue, whatever handle happens to sit at its index.
+    ///
+    /// The command HMAC and the response HMAC are keyed identically, so both sides call this.
+    /// They used not to: the response side asked only whether index *i* named some handle, so a
+    /// command with more handles than authorizations, driven with a session per handle, produced
+    /// a response HMAC key with an authValue in it that the command's did not have. The
+    /// verification then failed on a response that was perfectly correct.
+    fn authorized_handle(
+        handles: &[TPM_HANDLE],
+        num_auth_handles: u16,
+        index: usize,
+    ) -> Option<&TPM_HANDLE> {
+        if index < num_auth_handles as usize {
+            handles.get(index)
+        } else {
+            None
         }
     }
 
@@ -1130,12 +1212,8 @@ impl Tpm2 {
                 }
 
                 // For non-PWAP sessions, we need more complex processing
-                let mut h_copy = None;
-
-                if i < num_auth_handles as usize && i < self.in_handles.len() {
-                    // Set appropriate auth value on handle
-                    h_copy = Some(self.in_handles[i].clone());
-                }
+                let h_copy =
+                    Self::authorized_handle(&self.in_handles, num_auth_handles, i).cloned();
 
                 auth_cmd.nonce = session.sess_in.nonce.clone();
                 auth_cmd.sessionHandle = session.sess_in.sessionHandle.clone();
@@ -1332,13 +1410,26 @@ impl Tpm2 {
         resp_params_size: usize,
     ) -> Result<bool, TpmError> {
         let mut rp_ready = false;
-        resp_buf.set_current_pos(resp_params_pos + resp_params_size);
+        // The size came off the wire as a `u32`. On a 32-bit target the sum can wrap, and a
+        // wrapped position looks in bounds to `set_current_pos` and then panics the raw slice
+        // that computes rpHash further down.
+        let resp_params_end = resp_params_pos
+            .checked_add(resp_params_size)
+            .ok_or_else(|| {
+                TpmError::GenericError(format!(
+                "TPM response claims a {} B parameter area at offset {}, which is not a position \
+                 in any buffer",
+                resp_params_size, resp_params_pos
+            ))
+            })?;
+        resp_buf.set_current_pos(resp_params_end);
         resp_buf.check_status()?;
 
         // Pre-compute values needed for HMAC verification to avoid borrow conflicts
         let nonce_tpm_dec = self.nonce_tpm_dec.clone();
         let nonce_tpm_enc = self.nonce_tpm_enc.clone();
         let in_handles = self.in_handles.clone();
+        let num_auth_handles = self.num_auth_handles;
 
         if let Some(ref mut sessions) = self.sessions {
             for (j, session) in sessions.iter_mut().enumerate() {
@@ -1356,12 +1447,9 @@ impl Tpm2 {
                     continue;
                 }
 
-                // Non-PWAP session handling
-                let associated_handle = if j < in_handles.len() {
-                    Some(&in_handles[j])
-                } else {
-                    None
-                };
+                // Non-PWAP session handling. The predicate is the command side's, because the
+                // two HMAC keys have to be identical -- see `Tpm2::authorized_handle`.
+                let associated_handle = Self::authorized_handle(&in_handles, num_auth_handles, j);
 
                 // Update session data based on what the TPM just told us.
                 //
@@ -1677,6 +1765,10 @@ impl Tpm2 {
     /// record or a signed manifest — and [`TrustedPublic::from_pinned_name`] is where that
     /// comparison belongs.
     ///
+    /// The check runs after the command has succeeded, so a failure means the TPM has loaded an
+    /// object this client is about to refuse to hand back. `flush_orphaned_handle` flushes it,
+    /// rather than leaving a transient slot occupied by an object no caller can name.
+    ///
     /// What is available to check against differs by command, and the difference is not
     /// cosmetic:
     ///
@@ -1711,13 +1803,21 @@ impl Tpm2 {
                     // An object loaded with a nameAlg of TPM_ALG_NULL has no digest-based Name;
                     // TPM2_LoadExternal permits exactly that, and there is nothing to recompute.
                     if public.nameAlg != TPM_ALG_ID::NULL {
-                        public.verify_name(&name, &self.crypto).map_err(|err| {
-                            TpmError::GenericError(format!(
+                        if let Err(err) = public.verify_name(&name, &self.crypto) {
+                            // The command succeeded, so the object is loaded and occupying a
+                            // transient slot. The caller is about to be handed an error instead
+                            // of the handle, so this is the last point at which anything can
+                            // flush it — and a TPM that reports a Name inconsistent with its own
+                            // public area is not one to leave holding an unreachable object.
+                            let handle = resp.get_handle();
+                            self.flush_orphaned_handle(&handle);
+
+                            return Err(TpmError::GenericError(format!(
                                 "{} returned an object Name that fails the consistency check \
                                  against its public area: {}",
                                 cmd_code, err
-                            ))
-                        })?;
+                            )));
+                        }
                     }
                 }
 
@@ -1736,17 +1836,13 @@ impl Tpm2 {
 
 /// Factory function to create a new TPM implementation based on the available platform,
 /// performing its host-side crypto with `crypto`.
+///
+/// The platform is [`TpmTbsDevice`](crate::device::TpmTbsDevice)'s own concern — TBS on Windows,
+/// `/dev/tpm*` or a resource manager socket on Linux, and elsewhere a stub that reports at
+/// `connect` time that there is no TPM to talk to — so there is nothing to select between here.
 pub fn create_tpm_with_crypto(crypto: CryptoProvider) -> Tpm2 {
-    #[cfg(target_os = "windows")]
-    {
-        use crate::device::TpmTbsDevice;
-        Tpm2::new(Box::new(TpmTbsDevice::new()), crypto)
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        use crate::device::TpmTbsDevice;
-        Tpm2::new(Box::new(TpmTbsDevice::new()), crypto)
-    }
+    use crate::device::TpmTbsDevice;
+    Tpm2::new(Box::new(TpmTbsDevice::new()), crypto)
 }
 
 /// Factory function to create a new TPM implementation based on the available platform, using
@@ -1863,6 +1959,10 @@ mod tests {
     use super::*;
     use crate::crypto::software_provider::SOFTWARE_PROVIDER;
     use crate::tpm_types::*;
+    use rand::rngs::OsRng;
+    use rsa::traits::PublicKeyParts;
+    use rsa::{Oaep, RsaPrivateKey};
+    use sha1::Sha1;
     use std::sync::{Arc, Mutex};
 
     const LOCKOUT_AUTH: &[u8] = b"lockout-auth";
@@ -1876,17 +1976,19 @@ mod tests {
         u32::from_be_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]])
     }
 
-    /// The one authorization area of a `TPM2_Clear` command, which has a single handle and no
-    /// parameters. Layout from TPM 2.0 Part 1, §18.2:
+    /// The first authorization area of a command. Layout from TPM 2.0 Part 1, §18.2:
     /// `tag ‖ commandSize ‖ commandCode ‖ handles ‖ authorizationSize ‖ authorizationArea`.
     struct CommandAuth {
         nonce_caller: Vec<u8>,
         attributes: u8,
         hmac: Vec<u8>,
+        /// Offset just past the authorization area, which is where the command parameters start.
+        area_end: usize,
     }
 
-    fn parse_clear_command_auth(cmd: &[u8]) -> CommandAuth {
-        let mut p = 2 + 4 + 4 + 4; // tag, commandSize, commandCode, one handle
+    /// Parse the single authorization area of a command with `num_handles` handles.
+    fn parse_command_auth(cmd: &[u8], num_handles: usize) -> CommandAuth {
+        let mut p = 2 + 4 + 4 + 4 * num_handles; // tag, commandSize, commandCode, handles
         let auth_size = be32(cmd, p) as usize;
         p += 4;
         let auth_end = p + auth_size;
@@ -1907,18 +2009,34 @@ mod tests {
             p, auth_end,
             "authorization area size does not match its contents"
         );
-        assert_eq!(auth_end, cmd.len(), "TPM2_Clear should have no parameters");
 
         CommandAuth {
             nonce_caller,
             attributes,
             hmac,
+            area_end: auth_end,
         }
     }
 
-    /// A `TPM_ST_SESSIONS` response for a command with no response handles and no response
-    /// parameters, carrying exactly one authorization area.
-    fn build_response(nonce_tpm: &[u8], attributes: u8, hmac: &[u8]) -> Vec<u8> {
+    /// The authorization area of a `TPM2_Clear`, which has a single handle and no parameters.
+    fn parse_clear_command_auth(cmd: &[u8]) -> CommandAuth {
+        let auth = parse_command_auth(cmd, 1);
+        assert_eq!(
+            auth.area_end,
+            cmd.len(),
+            "TPM2_Clear should have no parameters"
+        );
+        auth
+    }
+
+    /// A `TPM_ST_SESSIONS` response for a command with no response handles, carrying `params` as
+    /// its response parameters and exactly one authorization area.
+    fn build_response_with_params(
+        params: &[u8],
+        nonce_tpm: &[u8],
+        attributes: u8,
+        hmac: &[u8],
+    ) -> Vec<u8> {
         let mut auth = Vec::new();
         auth.extend_from_slice(&(nonce_tpm.len() as u16).to_be_bytes());
         auth.extend_from_slice(nonce_tpm);
@@ -1928,26 +2046,31 @@ mod tests {
 
         let mut resp = Vec::new();
         resp.extend_from_slice(&TPM_ST::SESSIONS.get_value().to_be_bytes());
-        resp.extend_from_slice(&((2 + 4 + 4 + 4 + auth.len()) as u32).to_be_bytes());
+        resp.extend_from_slice(&((2 + 4 + 4 + 4 + params.len() + auth.len()) as u32).to_be_bytes());
         resp.extend_from_slice(&TPM_RC::SUCCESS.get_value().to_be_bytes()); // responseCode
-        resp.extend_from_slice(&0u32.to_be_bytes()); // parameterSize
+        resp.extend_from_slice(&(params.len() as u32).to_be_bytes()); // parameterSize
+        resp.extend_from_slice(params);
         resp.extend_from_slice(&auth);
         resp
     }
 
-    /// The TPM 2.0 response authorization HMAC, transcribed from the specification rather than
-    /// obtained from the code under test.
-    ///
-    /// TPM 2.0 Part 1, §19.6.5 and §19.6.6, for a response with no parameters:
+    /// A `TPM_ST_SESSIONS` response for a command with no response handles and no response
+    /// parameters, carrying exactly one authorization area.
+    fn build_response(nonce_tpm: &[u8], attributes: u8, hmac: &[u8]) -> Vec<u8> {
+        build_response_with_params(&[], nonce_tpm, attributes, hmac)
+    }
+
+    /// TPM 2.0 Part 1, §19.6.5 and §19.6.6:
     /// ```text
     ///   rpHash   := H_sessionAlg(responseCode ‖ commandCode ‖ parameters)
     ///   authHMAC := HMAC_sessionAlg(sessionKey ‖ authValue,
     ///                               rpHash ‖ nonceTPM ‖ nonceCaller ‖ sessionAttributes)
     /// ```
     /// (`nonceTPM` is the newer nonce on the response side, `nonceCaller` the older.)
-    fn spec_response_hmac(
+    fn spec_response_hmac_over(
         key: &[u8],
         cmd_code: TPM_CC,
+        params: &[u8],
         nonce_tpm: &[u8],
         nonce_caller: &[u8],
         attributes: u8,
@@ -1955,6 +2078,7 @@ mod tests {
         let mut rp = Vec::new();
         rp.extend_from_slice(&TPM_RC::SUCCESS.get_value().to_be_bytes());
         rp.extend_from_slice(&cmd_code.get_value().to_be_bytes());
+        rp.extend_from_slice(params);
         let rp_hash = Crypto::hash(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, &rp).unwrap();
 
         let mut buf = Vec::new();
@@ -1963,6 +2087,18 @@ mod tests {
         buf.extend_from_slice(nonce_caller);
         buf.push(attributes);
         Crypto::hmac(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, key, &buf).unwrap()
+    }
+
+    /// The TPM 2.0 response authorization HMAC, transcribed from the specification rather than
+    /// obtained from the code under test, for a response with no parameters.
+    fn spec_response_hmac(
+        key: &[u8],
+        cmd_code: TPM_CC,
+        nonce_tpm: &[u8],
+        nonce_caller: &[u8],
+        attributes: u8,
+    ) -> Vec<u8> {
+        spec_response_hmac_over(key, cmd_code, &[], nonce_tpm, nonce_caller, attributes)
     }
 
     /// The TPM 2.0 command authorization HMAC, likewise transcribed from the specification.
@@ -2064,12 +2200,45 @@ mod tests {
         let session = make_session(TPM_SE::POLICY, SALT);
         let key = session.session_key.clone();
         assert!(!key.is_empty(), "the salted session should have a key");
+        assert!(
+            session.expects_response_auth(),
+            "the TPM authenticates this response, so the client has to check it"
+        );
 
-        let (mut tpm, _log) = tpm_with(vec![correct_responder(vec![0xC1; 32], echo, key)]);
-        tpm.with_session(session);
+        let (mut tpm, _log) = tpm_with(vec![correct_responder(vec![0xC1; 32], echo, key.clone())]);
+        tpm.with_session(session.clone());
 
         tpm.Clear(&TPM_HANDLE::new(TPM_RH::LOCKOUT.get_value()))
             .expect("a correctly authenticated response should be accepted");
+
+        // The same session against a response whose tag is well formed, the right length, and
+        // keyed on the right session key -- but computed over a different nonceTPM from the one
+        // the response carries. Only a verifier that actually consumes nonceTPM rejects this,
+        // and a verifier that skips policy sessions altogether accepts it.
+        let sent_nonce = vec![0xC2; 32];
+        let hmac_nonce = vec![0xC3; 32];
+        let responder = MockResponse::Computed(Box::new(move |cmd: &[u8]| {
+            let auth = parse_clear_command_auth(cmd);
+            let hmac = spec_response_hmac(
+                &key,
+                TPM_CC::Clear,
+                &hmac_nonce,
+                &auth.nonce_caller,
+                auth.attributes,
+            );
+            build_response(&sent_nonce, auth.attributes, &hmac)
+        }));
+        let (mut tpm, _log) = tpm_with(vec![responder]);
+        tpm.with_session(session);
+
+        let err = tpm
+            .Clear(&TPM_HANDLE::new(TPM_RH::LOCKOUT.get_value()))
+            .expect_err("a tag computed over a nonce the response does not carry is not valid");
+        assert!(
+            format!("{}", err).contains("Invalid TPM response HMAC"),
+            "unexpected error: {}",
+            err
+        );
     }
 
     #[test]
@@ -2331,10 +2500,96 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_non_empty_password_session_response_auth_is_rejected() {
+        // A password session's response authorization is fixed: empty nonce, empty HMAC. There
+        // is no key to check anything else with, so a response that fills either field did not
+        // come from a TPM applying the rules, and the only answer available is to refuse it.
+        // `a_password_session_expects_no_response_auth` in `auth_session` pins the flag; this
+        // pins what dispatch does when the flag says "nothing to check" and something arrives.
+        let cases: [(&[u8], &[u8]); 3] = [
+            (&[], &[0x11; 32]),         // an HMAC where none can exist
+            (&[0x22; 16], &[]),         // a nonce a password session never has
+            (&[0x22; 16], &[0x11; 32]), // both
+        ];
+
+        for (nonce, hmac) in cases {
+            let (mut tpm, _log) = tpm_with(vec![MockResponse::Canned(build_response(
+                nonce,
+                TPMA_SESSION::continueSession.get_value(),
+                hmac,
+            ))]);
+
+            let err = tpm
+                .Clear(&TPM_HANDLE::new(TPM_RH::LOCKOUT.get_value()))
+                .expect_err("a password session's response carries no authorization to check");
+            assert!(
+                format!("{}", err).contains("Bad value in PWAP session response"),
+                "unexpected error for nonce {:?} hmac {:?}: {}",
+                nonce,
+                hmac,
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn a_handle_the_command_does_not_authorize_is_absent_from_the_response_hmac_key() {
+        // TPM2_ContextSave names one handle and authorizes none: saving a context needs no
+        // authorization, so a session attached to it is there for auditing or parameter
+        // encryption, not to authorize `saveHandle`. Its HMAC key is the session key alone, even
+        // though the handle beside it carries an authValue -- the caller set one because the
+        // object needs it for every *other* command.
+        //
+        // The command side has always applied that rule. The response side keyed on whichever
+        // handle sat at the session's index, authorized or not, so it folded in an authValue the
+        // command's key did not have and rejected a correct response. The same disagreement is
+        // reachable with a second session on TPM2_Duplicate, whose newParentHandle the command
+        // does not authorize.
+        let session = make_session(TPM_SE::HMAC, SALT);
+        let key = session.session_key.clone();
+
+        let mut save_handle = TPM_HANDLE::new(OBJECT_HANDLE);
+        save_handle
+            .set_name(&name_of(&sample_public(0x88)))
+            .unwrap();
+        save_handle.set_auth(b"object-auth");
+
+        let params = ContextSaveResponse {
+            context: TPMS_CONTEXT::new(
+                7,
+                &TPM_HANDLE::new(OBJECT_HANDLE),
+                &TPM_HANDLE::new(TPM_RH::OWNER.get_value()),
+                &TPMS_CONTEXT_DATA::default(),
+            ),
+        }
+        .toBytes()
+        .unwrap();
+
+        let nonce_tpm = vec![0xCB; 32];
+        let responder = MockResponse::Computed(Box::new(move |cmd: &[u8]| {
+            let auth = parse_command_auth(cmd, 1);
+            let hmac = spec_response_hmac_over(
+                &key,
+                TPM_CC::ContextSave,
+                &params,
+                &nonce_tpm,
+                &auth.nonce_caller,
+                auth.attributes,
+            );
+            build_response_with_params(&params, &nonce_tpm, auth.attributes, &hmac)
+        }));
+
+        let (mut tpm, _log) = tpm_with(vec![responder]);
+        tpm.with_session(session);
+
+        tpm.ContextSave(&save_handle)
+            .expect("the response HMAC key must be the one the command's HMAC was keyed on");
+    }
+
     // ---------------------------------------------------------------------------------------
     // Response code decoding: the shape of an ordinary TPM failure.
     // ---------------------------------------------------------------------------------------
-
     /// A response with the given code and body. `TPM_ST_NO_SESSIONS` is the tag a TPM uses for
     /// an error response, and for any command dispatched without an authorization session.
     fn response(tag: TPM_ST, response_code: u32, body: &[u8]) -> Vec<u8> {
@@ -2528,10 +2783,11 @@ mod tests {
     }
 
     #[test]
-    fn a_retried_command_with_an_authorization_session_is_resent_unchanged() {
-        // The resend re-marshals the request, including the authorization area. A command whose
-        // password session this client created for itself has to come out the same the second
-        // time round, or the TPM would reject the retry.
+    fn a_retried_command_with_a_password_session_is_resent_unchanged() {
+        // The resend re-marshals the request, including the authorization area. A password
+        // session has no nonce to roll and no HMAC to recompute, so its authorization area is a
+        // constant and the second command is byte for byte the first. That is a property of
+        // password sessions specifically -- see the HMAC session case below.
         let public = sample_public(0x77);
         let name = name_of(&public);
         let (mut tpm, log) = tpm_with(vec![
@@ -2550,6 +2806,58 @@ mod tests {
         assert_eq!(
             commands[0], commands[1],
             "the resend should be the same command, authorization area included"
+        );
+    }
+
+    #[test]
+    fn a_retried_command_with_an_hmac_session_rerolls_its_nonce_and_still_verifies() {
+        // `dispatch_command` calls `roll_nonces` on every attempt, so a session with a real
+        // nonce does not resend the same bytes: nonceCaller is fresh and the command HMAC is
+        // recomputed over it. What has to survive the retry is not the encoding but the
+        // authorization -- the second attempt must be one the TPM accepts, and its response must
+        // still verify against the nonce that attempt actually sent.
+        let session = make_session(TPM_SE::HMAC, SALT);
+        let mut key = session.session_key.clone();
+        key.extend_from_slice(LOCKOUT_AUTH);
+
+        let (mut tpm, log) = tpm_with(vec![
+            error_response(TPM_RC::RETRY.get_value()),
+            correct_responder(vec![0xCC; 32], echo, key.clone()),
+        ]);
+        tpm.with_session(session);
+
+        tpm.Clear(&TPM_HANDLE::new(TPM_RH::LOCKOUT.get_value()))
+            .expect("the resent command and its response authorization must agree");
+
+        let commands = log.lock().unwrap();
+        assert_eq!(
+            commands.len(),
+            2,
+            "the command should have been resent once"
+        );
+        assert_ne!(
+            commands[0], commands[1],
+            "a session with a nonce cannot resend the same bytes"
+        );
+
+        let first = parse_clear_command_auth(&commands[0]);
+        let second = parse_clear_command_auth(&commands[1]);
+        assert_ne!(
+            first.nonce_caller, second.nonce_caller,
+            "each attempt gets a fresh nonceCaller"
+        );
+        let name = TPM_RH::LOCKOUT.get_value().to_be_bytes().to_vec();
+        assert_eq!(
+            second.hmac,
+            spec_command_hmac(
+                &key,
+                TPM_CC::Clear,
+                &[name],
+                &second.nonce_caller,
+                &[0xBB; 32],
+                second.attributes,
+            ),
+            "the retry's HMAC must be over the nonce the retry sent"
         );
     }
 
@@ -2693,19 +3001,269 @@ mod tests {
         );
     }
 
+    /// A `TPM2_FlushContext` response: no handles, no parameters, no sessions.
+    fn flush_context_response() -> MockResponse {
+        MockResponse::Canned(response(TPM_ST::NO_SESSIONS, 0, &[]))
+    }
+
+    /// Assert that `cmd` is a `TPM2_FlushContext` for `handle`.
+    ///
+    /// `flushHandle` is a *parameter* of TPM2_FlushContext rather than a handle-area handle, so
+    /// it follows the header directly: `tag ‖ commandSize ‖ commandCode ‖ flushHandle`.
+    fn assert_flush_of(cmd: &[u8], handle: u32) {
+        assert_eq!(
+            be32(cmd, 6),
+            TPM_CC::FlushContext.get_value(),
+            "expected a TPM2_FlushContext"
+        );
+        assert_eq!(be32(cmd, 10), handle, "flushed the wrong handle");
+        assert_eq!(cmd.len(), 14, "TPM2_FlushContext takes one handle value");
+    }
+
     #[test]
-    fn a_command_input_public_area_does_not_leak_into_the_next_command() {
-        // The captured `inPublic` is per-invocation state. If it survived the command it was
-        // captured for, the next Load would be checked against the wrong object.
+    fn a_create_primary_name_is_checked_against_its_own_public_area() {
+        // Two commands supply the public area a Name is checked against in opposite ways:
+        // TPM2_LoadExternal takes it as an input, which the client captures at dispatch, while
+        // TPM2_CreatePrimary returns it in the response. A CreatePrimary must be checked
+        // against its own `outPublic` and never against a public area some earlier command
+        // captured.
+        //
+        // The sequence below is the one that would expose the confusion: a LoadExternal that
+        // captures `first`, then a command that supplies no public area at all, then a
+        // CreatePrimary that returns `second` but reports the Name of `first`. If the captured
+        // input area were what CreatePrimary compared the Name against, that response would be
+        // accepted. Today `dispatch_command` overwrites the captured area on every command, so
+        // this pins the rule rather than catching a live leak -- but the rule is what keeps a
+        // Name check meaningful, and both halves of it (per-command capture, and the choice of
+        // which area to compare against) have to hold for it to stay that way.
         let first = sample_public(0x55);
         let second = sample_public(0x66);
-        let (mut tpm, _log) = tpm_with(vec![
+        let (mut tpm, log) = tpm_with(vec![
             load_external_response(&name_of(&first)),
-            load_external_response(&name_of(&second)),
+            get_random_response(&[0xAB; 8]),
+            create_primary_response(&second, &name_of(&first)),
+            flush_context_response(),
         ]);
 
-        load_external(&mut tpm, &first).expect("first load is consistent");
-        load_external(&mut tpm, &second).expect("second load is consistent with its own public");
+        load_external(&mut tpm, &first).expect("the load is consistent with its own public area");
+        assert!(
+            tpm.command_object_public.is_none(),
+            "a captured input public area belongs to the command that supplied it and must not \
+             outlive it"
+        );
+
+        tpm.GetRandom(8)
+            .expect("a command that supplies no public area at all");
+        assert!(
+            tpm.command_object_public.is_none(),
+            "a command that supplies no public area must leave none behind either"
+        );
+
+        let err = create_primary(&mut tpm, &second).expect_err(
+            "the Name belongs to a public area this response did not return, so it is bogus",
+        );
+        assert!(
+            format!("{}", err).contains("consistency check"),
+            "unexpected error: {}",
+            err
+        );
+
+        let commands = log.lock().unwrap();
+        assert_eq!(commands.len(), 4, "the rejected object should be flushed");
+        assert_flush_of(&commands[3], OBJECT_HANDLE);
+    }
+
+    #[test]
+    fn an_object_whose_name_fails_the_consistency_check_is_flushed() {
+        // TPM2_LoadExternal has already succeeded, so the TPM holds a transient object. Its
+        // handle reaches no caller -- the Name check rejects the response -- so unless it is
+        // flushed here it occupies a transient slot until the TPM is reset. A TPM reporting a
+        // Name inconsistent with the public area it was handed is the last one to leave holding
+        // an object nobody can name.
+        let public = sample_public(0x33);
+        let wrong_name = name_of(&sample_public(0x44));
+        let (mut tpm, log) = tpm_with(vec![
+            load_external_response(&wrong_name),
+            flush_context_response(),
+        ]);
+
+        load_external(&mut tpm, &public).expect_err("the Name does not match the public area");
+
+        let commands = log.lock().unwrap();
+        assert_eq!(
+            commands.len(),
+            2,
+            "the loaded object must be flushed, not abandoned"
+        );
+        assert_flush_of(&commands[1], OBJECT_HANDLE);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Sessions the TPM has loaded: what happens when the client will not use them.
+    // ---------------------------------------------------------------------------------------
+
+    const SESSION_HANDLE: u32 = 0x02000000;
+
+    /// A `TPM2_StartAuthSession` response: the session handle and the TPM's nonce.
+    fn start_auth_session_response(handle: u32, nonce_tpm: &[u8]) -> MockResponse {
+        let mut body = Vec::new();
+        body.extend_from_slice(&handle.to_be_bytes());
+        body.extend_from_slice(&(nonce_tpm.len() as u16).to_be_bytes());
+        body.extend_from_slice(nonce_tpm);
+        MockResponse::Canned(response(TPM_ST::NO_SESSIONS, 0, &body))
+    }
+
+    #[test]
+    fn a_session_the_client_refuses_to_build_is_flushed() {
+        // TPM2_StartAuthSession has returned, so the TPM has allocated and loaded a session.
+        // Only then does this client decide it will not build a `Session` from it: parameter
+        // encryption was asked for on a session with no secret key material to key it with.
+        // The handle is in the response and nowhere else, and a TPM typically has room for about
+        // three loaded sessions, so dropping it here costs a slot until the next TPM reset.
+        //
+        // This is not a hypothetical path: `examples/tpm_samples.rs` provokes exactly this
+        // refusal on every run to demonstrate it, and then loads two more sessions.
+        let (mut tpm, log) = tpm_with(vec![
+            start_auth_session_response(SESSION_HANDLE, &[0xBB; 32]),
+            flush_context_response(),
+        ]);
+
+        let err = tpm
+            .start_auth_session_full(
+                TPM_SE::HMAC,
+                TPM_ALG_ID::SHA256,
+                TPMA_SESSION::continueSession | TPMA_SESSION::decrypt,
+                TPMT_SYM_DEF::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
+            )
+            .expect_err("an unsalted, unbound session cannot carry parameter encryption");
+        assert!(
+            format!("{}", err).contains("no secret key material"),
+            "unexpected error: {}",
+            err
+        );
+
+        let commands = log.lock().unwrap();
+        assert_eq!(
+            commands.len(),
+            2,
+            "the session the TPM loaded must be flushed, not abandoned"
+        );
+        assert_flush_of(&commands[1], SESSION_HANDLE);
+    }
+
+    #[test]
+    fn a_flush_on_the_error_path_does_not_displace_the_error_that_caused_it() {
+        // The flush is best effort and issued for its side effect on the TPM. Here the device
+        // has no response left for it, so `FlushContext` fails -- and the caller must still be
+        // told why the session was refused, not why the cleanup was.
+        let (mut tpm, log) = tpm_with(vec![start_auth_session_response(
+            SESSION_HANDLE,
+            &[0xBB; 32],
+        )]);
+
+        let err = tpm
+            .start_auth_session_full(
+                TPM_SE::HMAC,
+                TPM_ALG_ID::SHA256,
+                TPMA_SESSION::continueSession | TPMA_SESSION::encrypt,
+                TPMT_SYM_DEF::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
+            )
+            .expect_err("the refusal stands whatever the cleanup does");
+        assert!(
+            format!("{}", err).contains("no secret key material"),
+            "unexpected error: {}",
+            err
+        );
+        assert_eq!(
+            log.lock().unwrap().len(),
+            2,
+            "the flush should still have been attempted"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Session salt: sized by the salt key, not by the session.
+    // ---------------------------------------------------------------------------------------
+
+    /// A software stand-in for an RSA salt key: the private half, so the test can decrypt what
+    /// the client encrypts, and a public area whose `nameAlg` the caller chooses.
+    fn salt_key(name_alg: TPM_ALG_ID) -> (RsaPrivateKey, TrustedPublic) {
+        let private_key = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
+        let parameters = TPMS_RSA_PARMS::new(
+            &TPMT_SYM_DEF_OBJECT::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
+            &Some(TPMU_ASYM_SCHEME::null(TPMS_NULL_ASYM_SCHEME::default())),
+            2048,
+            65537,
+        );
+        let public = TPMT_PUBLIC {
+            nameAlg: name_alg,
+            parameters: Some(TPMU_PUBLIC_PARMS::rsaDetail(parameters)),
+            unique: Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA {
+                buffer: private_key.n().to_bytes_be(),
+            })),
+            ..Default::default()
+        };
+        let trusted = TrustedPublic::assume_trusted(public, &SOFTWARE_PROVIDER).unwrap();
+        (private_key, trusted)
+    }
+
+    /// The `encryptedSalt` parameter of a logged `TPM2_StartAuthSession`:
+    /// `tag ‖ commandSize ‖ commandCode ‖ tpmKey ‖ bind ‖ nonceCaller ‖ encryptedSalt ‖ ...`
+    fn encrypted_salt_of(cmd: &[u8]) -> Vec<u8> {
+        let mut p = 2 + 4 + 4 + 4 + 4;
+        let nonce_len = be16(cmd, p) as usize;
+        p += 2 + nonce_len;
+        let salt_len = be16(cmd, p) as usize;
+        p += 2;
+        cmd[p..p + salt_len].to_vec()
+    }
+
+    #[test]
+    fn the_session_salt_is_sized_by_the_salt_keys_name_alg_not_by_the_session_hash() {
+        // The TPM recovers the salt with OAEP under the salt *key's* nameAlg and then requires
+        // what it recovered to be exactly that hash's digest size (TPM 2.0 Part 4,
+        // `CryptSecretDecrypt`, which answers TPM_RC_VALUE on `encryptedSalt` otherwise). Sizing
+        // the salt by the session hash instead is right only while the two happen to agree; a
+        // SHA-1 salt key with a SHA-256 session sends 32 bytes where the TPM demands 20, and
+        // every salted session against that key fails outright.
+        //
+        // The client cannot see the TPM's side of that check, so this test does what the TPM
+        // does: decrypt the salt with the key's own private half and measure it.
+        let (private_key, trusted) = salt_key(TPM_ALG_ID::SHA1);
+
+        let (mut tpm, log) = tpm_with(vec![start_auth_session_response(
+            SESSION_HANDLE,
+            &[0xBB; 32],
+        )]);
+        tpm.start_salted_auth_session(
+            &TPM_HANDLE::new(0x81000001),
+            &trusted,
+            TPM_SE::HMAC,
+            TPM_ALG_ID::SHA256,
+            TPMA_SESSION::continueSession,
+            TPMT_SYM_DEF::default(),
+        )
+        .expect("a salted session over the mock device");
+
+        let cmd = log.lock().unwrap()[0].clone();
+        let salt = private_key
+            .decrypt(
+                Oaep::new_with_label::<Sha1, _>("SECRET\0"),
+                &encrypted_salt_of(&cmd),
+            )
+            .expect("the salt is encrypted under the salt key's own nameAlg");
+
+        assert_eq!(
+            salt.len(),
+            Crypto::digest_size_checked(TPM_ALG_ID::SHA1).unwrap(),
+            "the salt must be the digest size of the salt key's nameAlg (SHA-1, 20 bytes), not \
+             of the session hash (SHA-256, 32 bytes)"
+        );
+        assert_ne!(
+            salt.len(),
+            Crypto::digest_size_checked(TPM_ALG_ID::SHA256).unwrap(),
+            "sizing the salt by the session hash is the regression this pins"
+        );
     }
 }
 

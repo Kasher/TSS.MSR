@@ -117,6 +117,36 @@ fn sess_handle(s: &Session) -> TPM_HANDLE {
     s.sess_in.sessionHandle.clone()
 }
 
+/// The policy session as it stands after an assertion's command, which is emphatically **not**
+/// `Tpm2::last_session()`.
+///
+/// A `TPM2_PolicyXXX` command takes the policy session as an ordinary *handle parameter*; it never
+/// appears in the command's authorization area, so nothing about it comes back in
+/// `completed_sessions`. What does come back is whatever authorized the command — and
+/// `dispatch_command` manufactures a PWAP session for every auth handle a command declares.
+/// `TPM2_PolicySecret` and `TPM2_PolicyNV` each declare one (`authHandle`), so
+/// `last_session()` there is a password session on `TPM_RS_PW`. Returning it as "the updated
+/// policy session" made [`PolicyTree::execute`] address `TPM_RS_PW` as the `policySession` of
+/// every later assertion and hand the caller a password session at the end: the caller then
+/// authorized with a password while believing a policy had been enforced. That fails closed
+/// against an object with a real authValue, but succeeds — silently, and with no policy
+/// evaluated — against one with `userWithAuth` set and an empty authValue.
+///
+/// So match on the handle: a session that genuinely was in the authorization area comes back with
+/// its rolled nonce and is returned, and anything else leaves the caller's session untouched,
+/// which is what the TPM did to it.
+fn updated_policy_session(tpm: &Tpm2, session: &Session) -> Session {
+    let policy_handle = session.sess_in.sessionHandle.handle;
+    tpm.last_sessions()
+        .and_then(|completed| {
+            completed
+                .iter()
+                .find(|s| s.sess_in.sessionHandle.handle == policy_handle)
+                .cloned()
+        })
+        .unwrap_or_else(|| session.clone())
+}
+
 // ---------------------------------------------------------------------------
 // PolicyTree
 // ---------------------------------------------------------------------------
@@ -214,7 +244,7 @@ impl PolicyAssertion for PolicyCommandCode {
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
         tpm.PolicyCommandCode(&sess_handle(session), self.command_code)?;
-        Ok(tpm.last_session().unwrap_or_else(|| session.clone()))
+        Ok(updated_policy_session(tpm, session))
     }
 }
 
@@ -250,7 +280,7 @@ impl PolicyAssertion for PolicyLocality {
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
         tpm.PolicyLocality(&sess_handle(session), self.locality)?;
-        Ok(tpm.last_session().unwrap_or_else(|| session.clone()))
+        Ok(updated_policy_session(tpm, session))
     }
 }
 
@@ -328,7 +358,7 @@ impl PolicyAssertion for PolicyPcr {
         // `pcrDigest` that tells the TPM to skip the PCR comparison entirely.
         let pcr_digest = self.pcr_digest(tpm.crypto(), session.get_hash_alg())?;
         tpm.PolicyPCR(&sess_handle(session), &pcr_digest, &self.pcr_selections)?;
-        Ok(tpm.last_session().unwrap_or_else(|| session.clone()))
+        Ok(updated_policy_session(tpm, session))
     }
 }
 
@@ -362,7 +392,7 @@ impl PolicyAssertion for PolicyPassword {
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
         tpm.PolicyPassword(&sess_handle(session))?;
-        let mut sess = tpm.last_session().unwrap_or_else(|| session.clone());
+        let mut sess = updated_policy_session(tpm, session);
         // TPM2_PolicyPassword SETs isPasswordNeeded and CLEARs isAuthValueNeeded; mirror both,
         // because the two flags select different authorization encodings and the TPM will only
         // honour the one it last recorded.
@@ -402,7 +432,7 @@ impl PolicyAssertion for PolicyAuthValue {
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
         tpm.PolicyAuthValue(&sess_handle(session))?;
-        let mut sess = tpm.last_session().unwrap_or_else(|| session.clone());
+        let mut sess = updated_policy_session(tpm, session);
         // TPM2_PolicyAuthValue SETs isAuthValueNeeded and CLEARs isPasswordNeeded.
         sess.needs_hmac = true;
         sess.needs_password = false;
@@ -435,7 +465,7 @@ impl PolicyAssertion for PolicyCpHash {
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
         tpm.PolicyCpHash(&sess_handle(session), &self.cp_hash)?;
-        Ok(tpm.last_session().unwrap_or_else(|| session.clone()))
+        Ok(updated_policy_session(tpm, session))
     }
 }
 
@@ -470,7 +500,7 @@ impl PolicyAssertion for PolicyNameHash {
 
     fn execute(&self, tpm: &mut Tpm2, session: &Session) -> Result<Session, TpmError> {
         tpm.PolicyNameHash(&sess_handle(session), &self.name_hash)?;
-        Ok(tpm.last_session().unwrap_or_else(|| session.clone()))
+        Ok(updated_policy_session(tpm, session))
     }
 }
 
@@ -525,7 +555,7 @@ impl PolicyAssertion for PolicyCounterTimer {
             self.offset,
             self.operation,
         )?;
-        Ok(tpm.last_session().unwrap_or_else(|| session.clone()))
+        Ok(updated_policy_session(tpm, session))
     }
 }
 
@@ -586,7 +616,9 @@ impl PolicyAssertion for PolicySecret {
             &self.policy_ref,
             self.expiration,
         )?;
-        Ok(tpm.last_session().unwrap_or_else(|| session.clone()))
+        // `TPM2_PolicySecret` declares one auth handle, so the session the client just used is a
+        // PWAP session for `authHandle`, not this policy session. See `updated_policy_session`.
+        Ok(updated_policy_session(tpm, session))
     }
 }
 
@@ -700,7 +732,7 @@ impl PolicyAssertion for PolicySigned {
 
         tpm.FlushContext(&pub_key_handle)?;
         result?;
-        Ok(tpm.last_session().unwrap_or_else(|| session.clone()))
+        Ok(updated_policy_session(tpm, session))
     }
 }
 
@@ -771,7 +803,9 @@ impl PolicyAssertion for PolicyNv {
             self.offset,
             self.operation,
         )?;
-        Ok(tpm.last_session().unwrap_or_else(|| session.clone()))
+        // As for `PolicySecret`: `TPM2_PolicyNV` declares one auth handle, so what authorized the
+        // command was a PWAP session for `authHandle`. See `updated_policy_session`.
+        Ok(updated_policy_session(tpm, session))
     }
 }
 
@@ -824,7 +858,7 @@ impl PolicyAssertion for PolicyOr {
             hash_list.push(TPM2B_DIGEST { buffer: digest });
         }
         tpm.PolicyOR(&sess_handle(session), &hash_list)?;
-        Ok(tpm.last_session().unwrap_or_else(|| session.clone()))
+        Ok(updated_policy_session(tpm, session))
     }
 }
 
@@ -904,7 +938,7 @@ impl PolicyAssertion for PolicyAuthorize {
 
         tpm.FlushContext(&key_handle)?;
         result?;
-        Ok(tpm.last_session().unwrap_or_else(|| session.clone()))
+        Ok(updated_policy_session(tpm, session))
     }
 }
 
@@ -957,7 +991,7 @@ impl PolicyAssertion for PolicyDuplicationSelect {
             &self.new_parent_name,
             if self.include_object { 1 } else { 0 },
         )?;
-        Ok(tpm.last_session().unwrap_or_else(|| session.clone()))
+        Ok(updated_policy_session(tpm, session))
     }
 }
 
@@ -1249,6 +1283,171 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------------------
+    // The assertions that carry an authorization of their own must still return the *policy*
+    // session.
+    //
+    // `TPM2_PolicySecret` and `TPM2_PolicyNV` are the only two implemented here that declare an
+    // auth handle, so `dispatch_command` manufactures a PWAP session for it and
+    // `Tpm2::last_session()` is that password session, not the policy session — which these
+    // commands take as a plain handle parameter and never put in the authorization area.
+    // -----------------------------------------------------------------------------------
+
+    const POLICY_SESSION_HANDLE: u32 = 0x0300_0000;
+
+    fn be32(buf: &[u8], pos: usize) -> u32 {
+        u32::from_be_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]])
+    }
+
+    fn policy_session() -> Session {
+        Session::new(
+            TPM_HANDLE::new(POLICY_SESSION_HANDLE),
+            &[0u8; 32],
+            TPMA_SESSION::continueSession,
+            &[0u8; 32],
+        )
+    }
+
+    /// `TPM_ST_NO_SESSIONS ‖ 10 ‖ TPM_RC_SUCCESS`: the entire response to a policy command that
+    /// declares no auth handle and returns no parameters.
+    fn success_without_sessions() -> Vec<u8> {
+        vec![0x80, 0x01, 0x00, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00]
+    }
+
+    /// The response to a command that carried one authorization session:
+    /// `TPM_ST_SESSIONS ‖ responseSize ‖ TPM_RC_SUCCESS ‖ parameterSize ‖ params ‖ authArea`.
+    /// The auth area is the empty nonce, `continueSession` and the empty HMAC that a PWAP
+    /// session's response must carry.
+    fn success_with_one_pwap_session(params: &[u8]) -> Vec<u8> {
+        let mut resp = vec![0x80, 0x02];
+        let size = 2 + 4 + 4 + 4 + params.len() + 5;
+        resp.extend_from_slice(&(size as u32).to_be_bytes());
+        resp.extend_from_slice(&0u32.to_be_bytes());
+        resp.extend_from_slice(&(params.len() as u32).to_be_bytes());
+        resp.extend_from_slice(params);
+        resp.extend_from_slice(&[0x00, 0x00, 0x01, 0x00, 0x00]);
+        resp
+    }
+
+    /// `TPM2_PolicySecret`'s response parameters: an empty `timeout` and a NULL `TPMT_TK_AUTH`
+    /// (`TPM_ST_AUTH_SECRET ‖ TPM_RH_NULL ‖ empty digest`).
+    fn policy_secret_params() -> Vec<u8> {
+        vec![
+            0x00, 0x00, // timeout
+            0x80, 0x23, // policyTicket.tag = TPM_ST_AUTH_SECRET
+            0x40, 0x00, 0x00, 0x07, // policyTicket.hierarchy = TPM_RH_NULL
+            0x00, 0x00, // policyTicket.digest
+        ]
+    }
+
+    fn a_name() -> Vec<u8> {
+        [0x00u8, 0x0B].iter().copied().chain(0u8..32).collect()
+    }
+
+    #[test]
+    fn policy_secret_returns_the_policy_session_not_the_password_session_it_authorized_with() {
+        let device = MockTpmDevice::new(vec![MockResponse::Canned(success_with_one_pwap_session(
+            &policy_secret_params(),
+        ))]);
+        let log = device.command_log();
+        let mut tpm = Tpm2::with_software_crypto(Box::new(device));
+
+        let session = policy_session();
+        let assertion = PolicySecret::new(a_name(), TPM_HANDLE::new(TPM_RH::OWNER.get_value()));
+        let updated = assertion.execute(&mut tpm, &session).unwrap();
+
+        // The command itself addressed the policy session — handles are
+        // `authHandle ‖ policySession`, at offsets 10 and 14.
+        let cmd = log.lock().unwrap()[0].clone();
+        assert_eq!(be32(&cmd, 10), TPM_RH::OWNER.get_value());
+        assert_eq!(be32(&cmd, 14), POLICY_SESSION_HANDLE);
+
+        assert_eq!(
+            updated.sess_in.sessionHandle.handle, POLICY_SESSION_HANDLE,
+            "execute must return the policy session it was given"
+        );
+        assert_ne!(
+            updated.sess_in.sessionHandle.handle,
+            TPM_RH::PW.get_value(),
+            "returning the auto-created PWAP session hands the caller a password session"
+        );
+        assert!(
+            !updated.is_pwap(),
+            "a password session cannot satisfy the policy the caller believes it built"
+        );
+    }
+
+    #[test]
+    fn policy_nv_returns_the_policy_session_not_the_password_session_it_authorized_with() {
+        let device = MockTpmDevice::new(vec![MockResponse::Canned(success_with_one_pwap_session(
+            &[],
+        ))]);
+        let log = device.command_log();
+        let mut tpm = Tpm2::with_software_crypto(Box::new(device));
+
+        let session = policy_session();
+        let assertion = PolicyNv::new(
+            TPM_HANDLE::new(TPM_RH::OWNER.get_value()),
+            TPM_HANDLE::new(0x0180_0001),
+            a_name(),
+            vec![1, 2, 3, 4],
+            0,
+            TPM_EO::EQ,
+        );
+        let updated = assertion.execute(&mut tpm, &session).unwrap();
+
+        // Handles are `authHandle ‖ nvIndex ‖ policySession`, at offsets 10, 14 and 18.
+        let cmd = log.lock().unwrap()[0].clone();
+        assert_eq!(be32(&cmd, 18), POLICY_SESSION_HANDLE);
+
+        assert_eq!(
+            updated.sess_in.sessionHandle.handle, POLICY_SESSION_HANDLE,
+            "execute must return the policy session it was given"
+        );
+        assert_ne!(
+            updated.sess_in.sessionHandle.handle,
+            TPM_RH::PW.get_value(),
+            "returning the auto-created PWAP session hands the caller a password session"
+        );
+    }
+
+    #[test]
+    fn a_tree_keeps_addressing_the_policy_session_after_an_assertion_that_authorizes() {
+        // The consequence of the defect, one assertion further on: `PolicyTree::execute` feeds
+        // each assertion the session the previous one returned, so a PWAP session returned here
+        // becomes the `policySession` handle of every later `TPM2_PolicyXXX` — extending the
+        // password session instead of the policy session, and handing the caller the former at
+        // the end. Against an object with `userWithAuth` set and an empty authValue the
+        // subsequent command then succeeds by password, with no policy evaluated at all.
+        let device = MockTpmDevice::new(vec![
+            MockResponse::Canned(success_with_one_pwap_session(&policy_secret_params())),
+            MockResponse::Canned(success_without_sessions()),
+        ]);
+        let log = device.command_log();
+        let mut tpm = Tpm2::with_software_crypto(Box::new(device));
+
+        let tree = PolicyTree::new()
+            .add(PolicySecret::new(
+                a_name(),
+                TPM_HANDLE::new(TPM_RH::OWNER.get_value()),
+            ))
+            .add(PolicyCommandCode::new(TPM_CC::Sign));
+        let final_session = tree.execute(&mut tpm, policy_session()).unwrap();
+
+        let commands = log.lock().unwrap().clone();
+        assert_eq!(commands.len(), 2);
+        // `TPM2_PolicyCommandCode` has one handle, at offset 10.
+        assert_eq!(
+            be32(&commands[1], 10),
+            POLICY_SESSION_HANDLE,
+            "the assertion after PolicySecret must extend the policy session, not TPM_RS_PW"
+        );
+        assert_eq!(
+            final_session.sess_in.sessionHandle.handle, POLICY_SESSION_HANDLE,
+            "the session handed back to the caller must be the policy session"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------
     // Item 4: every assertion uses the digest shape of its `TSS.CPP` counterpart.
     //
     // The regression these pin: routing a single-extend assertion through `policy_update`
@@ -1453,5 +1652,89 @@ mod tests {
             .update_policy_digest(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, &mut acc)
             .unwrap();
         assert_eq!(acc, expected);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The other two assertions that genuinely double-extend.
+    //
+    // `PolicySecret` and `PolicySigned` are `PolicyUpdate` assertions, and the single-extend
+    // correction must not be over-applied to them — that would be the same mistake as the one
+    // this module fixed, in the opposite direction, and until now nothing here would have caught
+    // it: the only `policy_update` vectors exercised the free function, not these methods.
+    // -----------------------------------------------------------------------------------
+
+    #[test]
+    fn policy_secret_uses_policy_update_with_an_empty_policy_ref() {
+        // `PolicySecret::UpdatePolicyDigest` (TpmPolicy.h:533) is, in its entirety,
+        //     PolicyUpdate(accumulator, TPM_CC::PolicySecret, AuthObjectName, PolicyRef);
+        // so with an empty policyRef the digest is
+        //     H( H(0^32 ‖ 0x00000151 ‖ authObjectName) )
+        // over the 34-byte Name `000b` ‖ 00..1f. Computed outside this crate, with .NET's
+        // SHA-256 over those bytes.
+        let expected = hex("f4644163827e379c0376c37ef6a6d8265c6658f94fdad477a8992bc606d3219b");
+        // What a single extend would leave behind, i.e. what over-applying `policy_update1` to
+        // this assertion would produce: a digest no policy session can ever reach.
+        let single_extend_only =
+            hex("ff36ccf0020cc982a65323d96907aacc6aa3413e385bf38a10d25df99a58118c");
+
+        let policy = PolicySecret::new(a_name(), TPM_HANDLE::new(TPM_RH::OWNER.get_value()));
+        assert!(policy.policy_ref.is_empty());
+
+        let acc = digest_of(&policy);
+        assert_eq!(acc, expected);
+        assert_ne!(acc, single_extend_only);
+    }
+
+    #[test]
+    fn policy_signed_uses_policy_update_with_an_empty_policy_ref() {
+        // `PolicySigned::UpdatePolicyDigest` (TpmPolicy.cpp:462) is, in its entirety,
+        //     PolicyUpdate(accumulator, TPM_CC::PolicySigned, PublicKey.GetName(), PolicyRef);
+        // The key Name is an input here rather than a value under test — as in
+        // `policy_authorize_resets_the_accumulator_then_uses_policy_update` — so the vector is
+        // built from the two extends `PABase::PolicyUpdate` performs, spelled out with plain
+        // hashes rather than by calling the function under test.
+        let parameters = TPMU_PUBLIC_PARMS::rsaDetail(TPMS_RSA_PARMS::new(
+            &TPMT_SYM_DEF_OBJECT::default(),
+            &Some(TPMU_ASYM_SCHEME::rsassa(TPMS_SIG_SCHEME_RSASSA {
+                hashAlg: TPM_ALG_ID::SHA256,
+            })),
+            2048,
+            65537,
+        ));
+        let key = TPMT_PUBLIC::new(
+            TPM_ALG_ID::SHA256,
+            TPMA_OBJECT::sign | TPMA_OBJECT::userWithAuth,
+            &vec![],
+            &Some(parameters),
+            &Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA {
+                buffer: vec![0xcd; 256],
+            })),
+        );
+
+        let policy = PolicySigned::new(key.clone());
+        assert!(policy.policy_ref.is_empty());
+
+        let name = key.get_name(&SOFTWARE_PROVIDER).unwrap();
+        let single_extend_only = Crypto::hash(
+            &SOFTWARE_PROVIDER,
+            TPM_ALG_ID::SHA256,
+            &[
+                zero_digest().as_slice(),
+                &TPM_CC::PolicySigned.get_value().to_be_bytes(),
+                name.as_slice(),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        // The second extend is over the empty policyRef, and is not skipped for being empty.
+        let expected =
+            Crypto::hash(&SOFTWARE_PROVIDER, TPM_ALG_ID::SHA256, &single_extend_only).unwrap();
+
+        let acc = digest_of(&policy);
+        assert_eq!(acc, expected);
+        assert_ne!(
+            acc, single_extend_only,
+            "PolicySigned double-extends; collapsing it to one extend is unsatisfiable"
+        );
     }
 }
