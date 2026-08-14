@@ -21,7 +21,8 @@ pub mod software_provider;
 
 use crate::{error::TpmError, tpm_types::*};
 use provider::{CryptoProvider, EccEphemeralAgreement};
-use zeroize::Zeroizing;
+use std::fmt;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The RSA public exponent the TPM 2.0 specification defines as the default (65537, "F4").
 ///
@@ -34,14 +35,100 @@ pub const RSA_DEFAULT_EXPONENT: [u8; 3] = [0x01, 0x00, 0x01];
 /// plus the public exponent needed to reconstruct the key.
 ///
 /// The second prime is recovered by dividing the modulus by the first, so it is not stored.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RsaKeyParts {
+    /// The modulus, which is public.
     pub modulus: Vec<u8>,
+
+    /// The first prime factor, which is the whole of the private key.
+    ///
+    /// It sits beside the modulus, so the second prime, and from it the private exponent, follow
+    /// from a single division. It is therefore wiped when dropped, and withheld from the [`Debug`]
+    /// rendering below. Because the wipe is a `Drop`, this field cannot be moved out of the
+    /// struct: take it with [`std::mem::take`] instead.
     pub prime: Vec<u8>,
+
     /// The public exponent, big-endian and without leading zeros. Callers holding a
     /// `TPMS_RSA_PARMS` should populate this with `TPMS_RSA_PARMS::exponent_bytes`, which
     /// resolves the specification's zero-means-65537 encoding.
     pub exponent: Vec<u8>,
+}
+
+/// Renders the public parts of the key in full and the prime not at all.
+///
+/// A derived `Debug` would put the private key into any log line that formats a generated or
+/// reconstructed key, which includes every error path that reports the key it was working on.
+impl fmt::Debug for RsaKeyParts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RsaKeyParts")
+            .field("modulus", &self.modulus)
+            .field("prime", &format_args!("<redacted>"))
+            .field("exponent", &self.exponent)
+            .finish()
+    }
+}
+
+/// Wipes the prime, so that a key that has gone out of scope is not left in freed heap.
+///
+/// `Clone` copies the prime, and every copy is wiped by this same implementation.
+impl Drop for RsaKeyParts {
+    fn drop(&mut self) {
+        self.prime.zeroize();
+    }
+}
+
+#[cfg(test)]
+mod secret_redaction_tests {
+    use super::*;
+
+    #[test]
+    fn rsa_key_parts_debug_withholds_the_private_prime() {
+        // Bytes chosen so that neither their decimal nor their hexadecimal rendering is a
+        // substring of anything the redacted `Debug` legitimately prints.
+        let prime = vec![0xA7u8, 0xB3, 0xC9, 0xD1, 0xE5, 0xF2];
+        let key = RsaKeyParts {
+            modulus: vec![0x11, 0x22],
+            prime: prime.clone(),
+            exponent: RSA_DEFAULT_EXPONENT.to_vec(),
+        };
+
+        let rendered = format!("{:?}", key);
+
+        for byte in &prime {
+            assert!(
+                !rendered.contains(&byte.to_string()),
+                "debug rendering {rendered} leaks prime byte {byte} in decimal"
+            );
+            assert!(
+                !rendered.to_lowercase().contains(&format!("{byte:02x}")),
+                "debug rendering {rendered} leaks prime byte {byte} in hex"
+            );
+        }
+        assert!(
+            !rendered.contains(&format!("{:?}", prime)),
+            "debug rendering {rendered} leaks the prime verbatim"
+        );
+
+        // The public parts stay legible, which is the point of hand writing the rendering rather
+        // than dropping `Debug` altogether.
+        assert!(rendered.contains(&format!("{:?}", key.modulus)));
+        assert!(rendered.contains(&format!("{:?}", key.exponent)));
+    }
+
+    #[test]
+    fn rsa_key_parts_still_clones() {
+        let key = RsaKeyParts {
+            modulus: vec![0x11, 0x22],
+            prime: vec![0xA7, 0xB3],
+            exponent: RSA_DEFAULT_EXPONENT.to_vec(),
+        };
+
+        let copy = key.clone();
+
+        assert_eq!(copy.modulus, key.modulus);
+        assert_eq!(copy.prime, key.prime);
+        assert_eq!(copy.exponent, key.exponent);
+    }
 }
 
 pub struct Crypto;

@@ -548,13 +548,19 @@ impl TSS_KEY {
                 return Err(TpmError::GenericError("Only RSA key creation is supported".to_string()));
             };
 
-        let key = Crypto::rsa_generate_keypair(crypto, key_bits, &exponent)?;
+        let mut key = Crypto::rsa_generate_keypair(crypto, key_bits, &exponent)?;
+
+        // `RsaKeyParts` wipes its prime when dropped, so its fields cannot be moved out. Taking
+        // them leaves nothing behind for the wipe to do, which is what is wanted here: the
+        // material is moving into this key rather than being copied out of it.
 
         // Store modulus (n) in publicPart.unique
-        self.publicPart.unique = Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA { buffer: key.modulus }));
+        self.publicPart.unique = Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA {
+            buffer: std::mem::take(&mut key.modulus),
+        }));
 
         // Store first prime (p) as privatePart
-        self.privatePart = key.prime;
+        self.privatePart = std::mem::take(&mut key.prime);
 
         Ok(())
     }

@@ -1,9 +1,11 @@
 use crate::crypto::{provider::CryptoProvider, Crypto};
 use crate::error::TpmError;
 use crate::{tpm_structure::TpmEnum, tpm_types::*};
+use std::fmt;
+use zeroize::Zeroize;
 
 /// Authentication session for TPM commands
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct Session {
     pub sess_in: TPMS_AUTH_COMMAND,
     pub sess_out: TPMS_AUTH_RESPONSE,
@@ -15,6 +17,9 @@ pub struct Session {
     pub needs_password: bool,
 
     /// Derived session key (from KDFa with "ATH" label)
+    ///
+    /// This authorizes every command issued on the session and keys its parameter encryption, so
+    /// it is wiped when dropped and withheld from the [`Debug`] rendering below.
     pub session_key: Vec<u8>,
 
     /// Symmetric algorithm for parameter encryption
@@ -22,6 +27,48 @@ pub struct Session {
 
     /// Handle of the entity this session is bound to (NULL if unbound)
     pub bind_handle: u32,
+}
+
+/// Renders what identifies a session and none of what authorizes it.
+///
+/// A derived `Debug` would print `session_key`, and for a password session `sess_in.hmac`, which
+/// holds the caller's auth value verbatim. A session is formatted wherever a command is traced or
+/// an error reports the session it was issued on, so a derived implementation would put both into
+/// ordinary log output.
+impl fmt::Debug for Session {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Session")
+            .field(
+                "session_handle",
+                &format_args!("0x{:08x}", self.sess_in.sessionHandle.handle),
+            )
+            .field("session_type", &self.session_type)
+            .field("hash_alg", &self.hash_alg)
+            .field("attributes", &self.sess_in.sessionAttributes)
+            .field("symmetric", &self.symmetric)
+            .field("needs_hmac", &self.needs_hmac)
+            .field("needs_password", &self.needs_password)
+            .field("bind_handle", &format_args!("0x{:08x}", self.bind_handle))
+            .field("nonce_caller", &self.sess_in.nonce)
+            .field("nonce_tpm", &self.sess_out.nonce)
+            .field("session_key", &format_args!("<redacted>"))
+            .field("auth", &format_args!("<redacted>"))
+            .finish()
+    }
+}
+
+/// Wipes the session key and the auth value, so that a session that has gone out of scope is not
+/// left in freed heap.
+///
+/// The session is cloned on essentially every command, so the copies matter as much as the
+/// original; each one is wiped by this same implementation. `sess_in.hmac` is wiped here rather
+/// than by its own type because `TPMS_AUTH_COMMAND` is generated from the TPM 2.0 specification
+/// and cannot carry hand-written behaviour.
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.session_key.zeroize();
+        self.sess_in.hmac.zeroize();
+    }
 }
 
 impl Session {
@@ -302,4 +349,75 @@ fn trim_trailing_zeros(data: &[u8]) -> Vec<u8> {
         result.pop();
     }
     result
+}
+
+#[cfg(test)]
+mod secret_redaction_tests {
+    use super::*;
+
+    /// Bytes chosen so that neither their decimal nor their hexadecimal rendering is a substring
+    /// of anything the redacted `Debug` legitimately prints.
+    const SECRET: [u8; 6] = [0xA7, 0xB3, 0xC9, 0xD1, 0xE5, 0xF2];
+
+    fn assert_withholds_secret(rendered: &str, secret: &[u8]) {
+        for byte in secret {
+            assert!(
+                !rendered.contains(&byte.to_string()),
+                "debug rendering {rendered} leaks byte {byte} in decimal"
+            );
+            assert!(
+                !rendered.to_lowercase().contains(&format!("{byte:02x}")),
+                "debug rendering {rendered} leaks byte {byte} in hex"
+            );
+        }
+        assert!(
+            !rendered.contains(&format!("{:?}", secret)),
+            "debug rendering {rendered} leaks the secret verbatim"
+        );
+    }
+
+    #[test]
+    fn session_debug_withholds_the_session_key() {
+        let mut session = Session::default();
+        session.session_key = SECRET.to_vec();
+
+        let rendered = format!("{:?}", session);
+
+        assert_withholds_secret(&rendered, &SECRET);
+
+        // The fields that identify the session stay legible, which is the point of hand writing
+        // the rendering rather than dropping `Debug` altogether.
+        assert!(rendered.contains("session_handle"));
+        assert!(rendered.contains("session_type"));
+        assert!(rendered.contains("hash_alg"));
+        assert!(rendered.contains("attributes"));
+        assert!(rendered.contains("session_key: <redacted>"));
+    }
+
+    #[test]
+    fn session_debug_withholds_the_password_auth_value() {
+        // A PWAP session carries the caller's auth value in `sess_in.hmac`, in the clear.
+        let session = Session::pw(Some(SECRET.to_vec()));
+
+        let rendered = format!("{:?}", session);
+
+        assert_withholds_secret(&rendered, &SECRET);
+        assert!(rendered.contains("auth: <redacted>"));
+    }
+
+    #[test]
+    fn session_still_defaults_and_clones() {
+        let mut session = Session::default();
+        assert!(session.session_key.is_empty());
+
+        session.session_key = SECRET.to_vec();
+        let copy = session.clone();
+
+        assert_eq!(copy.session_key, session.session_key);
+        assert_eq!(
+            copy.sess_in.sessionHandle.handle,
+            session.sess_in.sessionHandle.handle
+        );
+        assert_eq!(copy.hash_alg, session.hash_alg);
+    }
 }
