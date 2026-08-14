@@ -31,7 +31,7 @@ use crate::{
 use std::ffi::c_void;
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{NTSTATUS, STATUS_INVALID_SIGNATURE};
+use windows::Win32::Foundation::{NTSTATUS, STATUS_INVALID_PARAMETER, STATUS_INVALID_SIGNATURE};
 use windows::Win32::Security::Cryptography::{
     BCryptDeriveKey, BCryptDestroyKey, BCryptDestroySecret, BCryptEncrypt, BCryptExportKey,
     BCryptFinalizeKeyPair, BCryptGenRandom, BCryptGenerateKeyPair, BCryptGenerateSymmetricKey,
@@ -635,10 +635,17 @@ fn rsa_pkcs1v15_verify(
         )
     };
 
-    // A signature that does not verify is an answer rather than a failure, and is the one status
-    // separated out here. Anything else means the verification could not be performed at all, for
-    // instance because the digest length did not match the algorithm named in the padding.
-    if status == STATUS_INVALID_SIGNATURE {
+    // A signature that does not verify is an answer rather than a failure, so both of the statuses
+    // that mean "no" are turned into one.
+    //
+    // `STATUS_INVALID_SIGNATURE` is the obvious one. `STATUS_INVALID_PARAMETER` is how CNG reports
+    // a signature it will not even attempt, which for an attacker-supplied value mostly means one
+    // numerically greater than the modulus or of the wrong length. Those are malformed signatures,
+    // and a caller checking a signature off the wire wants to hear "invalid" rather than an error
+    // it has to classify. Reporting them as failures would also disagree with every other backend:
+    // the RustCrypto one answers `Ok(false)` for exactly these inputs, so a provider that did not
+    // would make the two disagree on which signatures are acceptable.
+    if status == STATUS_INVALID_SIGNATURE || status == STATUS_INVALID_PARAMETER {
         return Ok(false);
     }
 
@@ -868,18 +875,47 @@ mod tests {
         .unwrap();
         assert!(verified, "a good signature was rejected");
 
-        // A bad signature is an answer, not an error, so it must come back as `Ok(false)`.
-        let mut corrupted = signature.clone();
-        corrupted[0] ^= 0xff;
-        let verified = (CNG_PROVIDER.rsa.pkcs1v15_verify)(
-            &key.modulus,
-            &key.exponent,
-            TPM_ALG_ID::SHA256,
-            &digest,
-            &corrupted,
-        )
-        .unwrap();
-        assert!(!verified, "a corrupted signature was accepted");
+        // Every way a signature can be wrong has to come back as `Ok(false)` rather than as an
+        // error, and has to agree with the other backend on that. The first two cases are not
+        // interchangeable: corrupting the low byte leaves a value below the modulus, which CNG
+        // rejects as an invalid signature, while corrupting the high byte can push it above the
+        // modulus, which CNG rejects as an invalid *parameter*. Testing only one of them left the
+        // outcome depending on which key was generated, and the test passed or failed by luck.
+        let mut low_byte_flipped = signature.clone();
+        *low_byte_flipped.last_mut().unwrap() ^= 0xff;
+
+        let mut high_byte_flipped = signature.clone();
+        high_byte_flipped[0] ^= 0xff;
+
+        let truncated = signature[..signature.len() - 1].to_vec();
+        let empty = Vec::new();
+
+        for (description, bad) in [
+            ("a flipped low byte", low_byte_flipped),
+            ("a flipped high byte", high_byte_flipped),
+            ("a truncated signature", truncated),
+            ("an empty signature", empty),
+        ] {
+            let ours = (CNG_PROVIDER.rsa.pkcs1v15_verify)(
+                &key.modulus,
+                &key.exponent,
+                TPM_ALG_ID::SHA256,
+                &digest,
+                &bad,
+            )
+            .unwrap_or_else(|e| panic!("{description} was reported as a failure rather than as an invalid signature: {e:?}"));
+            assert!(!ours, "{description} was accepted");
+
+            let theirs = (SOFTWARE_PROVIDER.rsa.pkcs1v15_verify)(
+                &key.modulus,
+                &key.exponent,
+                TPM_ALG_ID::SHA256,
+                &digest,
+                &bad,
+            )
+            .unwrap();
+            assert_eq!(ours, theirs, "the backends disagree about {description}");
+        }
     }
 
     #[test]
