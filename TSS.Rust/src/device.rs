@@ -11,12 +11,19 @@ use crate::error::TpmError;
 use std::os::raw::c_void;
 #[cfg(target_os = "windows")]
 use std::ptr;
+// The `Win32_System_TpmBaseServices` feature of the `windows` crate is only requested for Windows
+// targets, so this module does not exist anywhere else.
+#[cfg(target_os = "windows")]
 use windows::Win32::System::TpmBaseServices::*;
 
 #[cfg(target_os = "linux")]
 use std::fs::{File, OpenOptions};
 #[cfg(target_os = "linux")]
-use std::os::unix::io::AsRawFd;
+use std::io::{Read, Write};
+#[cfg(target_os = "linux")]
+use std::net::TcpStream;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 /// Defines the TPM connection information flags
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,11 +432,123 @@ pub trait TpmDevice {
 //     }
 // }
 
+/// A TBS (TPM Base Services) context handle together with its ownership.
+///
+/// Keeping the handle and the ownership flag in one type means the two cannot drift apart, and it
+/// gives the handle a [`Drop`] of its own: an owned context is closed as soon as the value holding
+/// it goes away, including on an early return or an unwind. A borrowed context is never closed.
+#[cfg(target_os = "windows")]
+struct TbsContext {
+    handle: *mut c_void,
+    owned: bool,
+}
+
+#[cfg(target_os = "windows")]
+impl TbsContext {
+    /// Opens a new TBS context. The returned value owns it and closes it on drop.
+    fn create() -> Result<Self, TpmError> {
+        let mut params = TBS_CONTEXT_PARAMS2 {
+            version: TBS_CONTEXT_VERSION_TWO,
+            ..Default::default()
+        };
+        params.Anonymous.Anonymous._bitfield = 4;
+        params.Anonymous.asUINT32 = 4;
+
+        let mut handle: *mut c_void = ptr::null_mut();
+        // SAFETY: `params` is a fully initialized TBS_CONTEXT_PARAMS2 whose `version` field marks
+        // it as the version-two layout TBS expects behind the TBS_CONTEXT_PARAMS pointer, and
+        // `handle` is a live local that TBS only writes to. Both pointers outlive the call.
+        let res = unsafe {
+            Tbsi_Context_Create(
+                &params as *const TBS_CONTEXT_PARAMS2 as *const TBS_CONTEXT_PARAMS,
+                &mut handle,
+            )
+        };
+
+        if res != TBS_SUCCESS {
+            return Err(TpmError::TbsError(format!(
+                "Failed to connect to TBS: {:?}",
+                res
+            )));
+        }
+        if handle.is_null() {
+            return Err(TpmError::TbsError(
+                "TBS reported success but returned no context".to_string(),
+            ));
+        }
+
+        Ok(Self {
+            handle,
+            owned: true,
+        })
+    }
+
+    /// Wraps a context owned by the caller. The returned value never closes it.
+    ///
+    /// # Safety
+    ///
+    /// `handle` must be a valid TBS context that outlives the returned value.
+    unsafe fn borrowed(handle: *mut c_void) -> Result<Self, TpmError> {
+        if handle.is_null() {
+            return Err(TpmError::InvalidParameter);
+        }
+
+        Ok(Self {
+            handle,
+            owned: false,
+        })
+    }
+
+    fn handle(&self) -> *mut c_void {
+        self.handle
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for TbsContext {
+    fn drop(&mut self) {
+        if !self.owned {
+            return;
+        }
+
+        // The unit tests wrap dangling handles that must never reach TBS, so under `cfg(test)`
+        // the close is only recorded. A unit test must therefore never open a real context.
+        #[cfg(test)]
+        tbs_close_log::record();
+
+        // SAFETY: `handle` came from a successful `Tbsi_Context_Create` in `create`, which is the
+        // only constructor that sets `owned`. `TbsContext` is neither `Clone` nor `Copy`, so this
+        // is the only value holding that handle, and `Drop` runs at most once - meeting the TBS
+        // requirement of exactly one close per created context.
+        #[cfg(not(test))]
+        unsafe {
+            Tbsip_Context_Close(self.handle);
+        }
+    }
+}
+
+/// Records context closes for the unit tests, which cannot open a real TBS context.
+#[cfg(all(test, target_os = "windows"))]
+mod tbs_close_log {
+    use std::cell::Cell;
+
+    thread_local! {
+        static CLOSES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(super) fn record() {
+        CLOSES.with(|closes| closes.set(closes.get() + 1));
+    }
+
+    pub(super) fn count() -> usize {
+        CLOSES.with(|closes| closes.get())
+    }
+}
+
 // Windows TBS (TPM Base Services) implementation
 #[cfg(target_os = "windows")]
 pub struct TpmTbsDevice {
-    context: *mut c_void,
-    owns_context: bool,
+    context: Option<TbsContext>,
     result_buffer: [u8; 4096],
     res_size: u32,
     tpm_info: u32,
@@ -446,8 +565,7 @@ impl Default for TpmTbsDevice {
 impl TpmTbsDevice {
     pub fn new() -> Self {
         TpmTbsDevice {
-            context: ptr::null_mut(),
-            owns_context: false,
+            context: None,
             result_buffer: [0; 4096],
             res_size: 0,
             tpm_info: 0,
@@ -456,21 +574,20 @@ impl TpmTbsDevice {
 
     /// Creates a TPM device that submits commands through a caller-owned TBS context.
     ///
-    /// The context is borrowed and will not be closed by [`TpmDevice::close`] or when the device
-    /// is dropped.
+    /// The context is borrowed: it is closed neither by [`TpmDevice::close`] nor when the device
+    /// is dropped. A context opened by [`TpmDevice::connect`], by contrast, is owned by the device
+    /// and is closed by either.
     ///
     /// # Safety
     ///
     /// `context` must be a valid TBS context and must remain valid until this device is closed or
     /// dropped. The caller must synchronize any other use of the context.
     pub unsafe fn from_borrowed_context(context: *mut c_void) -> Result<Self, TpmError> {
-        if context.is_null() {
-            return Err(TpmError::InvalidParameter);
-        }
+        // SAFETY: forwarded from this function's own contract.
+        let context = unsafe { TbsContext::borrowed(context) }?;
 
         Ok(Self {
-            context,
-            owns_context: false,
+            context: Some(context),
             result_buffer: [0; 4096],
             res_size: 0,
             tpm_info: TpmConnInfo::TpmTbsConn as u32,
@@ -481,35 +598,18 @@ impl TpmTbsDevice {
 #[cfg(target_os = "windows")]
 impl TpmDevice for TpmTbsDevice {
     fn connect(&mut self) -> Result<bool, TpmError> {
-        if !self.context.is_null() {
+        if self.context.is_some() {
             return Ok(true); // Already connected
         }
 
-        let mut params = TBS_CONTEXT_PARAMS2 {
-            version: TBS_CONTEXT_VERSION_TWO,
-            ..Default::default()
-        };
-        params.Anonymous.Anonymous._bitfield = 4;
-        params.Anonymous.asUINT32 = 4;
-
-        let context_ptr = &mut self.context as *mut *mut c_void;
-        let res = unsafe {
-            Tbsi_Context_Create(
-                &params as *const TBS_CONTEXT_PARAMS2 as *const TBS_CONTEXT_PARAMS,
-                context_ptr,
-            )
-        };
-
-        if res != TBS_SUCCESS {
-            return Err(TpmError::TbsError(format!(
-                "Failed to connect to TBS: {:?}",
-                res
-            )));
-        }
-        self.owns_context = true;
+        // Held locally until the device is known to be usable: every early return below drops it,
+        // which closes the context.
+        let context = TbsContext::create()?;
 
         // Get device info to check if TPM 2.0 is available
         let mut info = TPM_DEVICE_INFO::default();
+        // SAFETY: the size passed is the size of the very buffer being passed, `info` is live for
+        // the duration of the call, and TBS only writes to it.
         let res = unsafe {
             Tbsi_GetDeviceInfo(
                 std::mem::size_of::<TPM_DEVICE_INFO>() as u32,
@@ -518,14 +618,14 @@ impl TpmDevice for TpmTbsDevice {
         };
 
         if res != TBS_SUCCESS {
-            self.close();
             return Err(TpmError::TbsError("Failed to get device info".to_string()));
         } else if info.tpmVersion != TPM_VERSION_20 {
-            self.close();
             return Err(TpmError::TbsError(
                 "Platform does not contain a TPM 2.0".to_string(),
             ));
         }
+
+        self.context = Some(context);
 
         // Set appropriate flags
         self.tpm_info = TpmConnInfo::TpmTbsConn as u32;
@@ -534,27 +634,30 @@ impl TpmDevice for TpmTbsDevice {
     }
 
     fn close(&mut self) {
-        if self.owns_context && !self.context.is_null() {
-            unsafe { Tbsip_Context_Close(self.context) };
-        }
-        self.context = ptr::null_mut();
-        self.owns_context = false;
+        // Dropping the context closes it, but only if this device owns it.
+        self.context = None;
         self.res_size = 0;
         self.tpm_info = 0;
     }
 
     fn dispatch_command(&mut self, cmd_buf: &[u8]) -> Result<(), TpmError> {
-        if self.context.is_null() {
-            return Err(TpmError::NotConnected);
-        }
+        // Copied out so that the rest of the method can borrow `self` mutably.
+        let context = match &self.context {
+            Some(context) => context.handle(),
+            None => return Err(TpmError::NotConnected),
+        };
 
         // Reset result buffer size
         self.res_size = self.result_buffer.len() as u32;
 
         // Submit command to TBS
+        // SAFETY: `context` is a live TBS context (dropping the device or calling `close` clears
+        // `self.context`, so it cannot outlive its close). `result_buffer` and `res_size` are
+        // fields of `self`, borrowed mutably here and so not aliased, and `res_size` is set to the
+        // buffer's true length just above, which is what bounds what TBS writes.
         let res = unsafe {
             Tbsip_Submit_Command(
-                self.context,
+                context,
                 TBS_COMMAND_LOCALITY_ZERO,
                 TBS_COMMAND_PRIORITY_NORMAL,
                 cmd_buf,
@@ -585,7 +688,7 @@ impl TpmDevice for TpmTbsDevice {
     }
 
     fn response_is_ready(&self) -> Result<bool, TpmError> {
-        if self.context.is_null() {
+        if self.context.is_none() {
             return Err(TpmError::NotConnected);
         }
 
@@ -612,6 +715,24 @@ mod windows_tests {
 
     use super::*;
 
+    /// A pointer that is never dereferenced: the tests below only ever check whether it is
+    /// carried around and whether a close was attempted on it.
+    fn fake_context() -> *mut c_void {
+        NonNull::<c_void>::dangling().as_ptr()
+    }
+
+    fn owned_device(context: *mut c_void) -> TpmTbsDevice {
+        TpmTbsDevice {
+            context: Some(TbsContext {
+                handle: context,
+                owned: true,
+            }),
+            result_buffer: [0; 4096],
+            res_size: 0,
+            tpm_info: TpmConnInfo::TpmTbsConn as u32,
+        }
+    }
+
     #[test]
     fn borrowed_context_rejects_null() {
         let result = unsafe { TpmTbsDevice::from_borrowed_context(ptr::null_mut()) };
@@ -620,11 +741,74 @@ mod windows_tests {
 
     #[test]
     fn borrowed_context_is_not_owned() {
-        let context = NonNull::<c_void>::dangling().as_ptr();
+        let context = fake_context();
         let device = unsafe { TpmTbsDevice::from_borrowed_context(context) }.unwrap();
 
-        assert_eq!(device.context, context);
-        assert!(!device.owns_context);
+        let held = device.context.as_ref().unwrap();
+        assert_eq!(held.handle(), context);
+        assert!(!held.owned);
+    }
+
+    #[test]
+    fn borrowed_context_is_not_closed_on_drop() {
+        let closes = tbs_close_log::count();
+
+        let device = unsafe { TpmTbsDevice::from_borrowed_context(fake_context()) }.unwrap();
+        drop(device);
+
+        assert_eq!(tbs_close_log::count(), closes);
+    }
+
+    #[test]
+    fn borrowed_context_is_not_closed_by_close() {
+        let closes = tbs_close_log::count();
+
+        let mut device = unsafe { TpmTbsDevice::from_borrowed_context(fake_context()) }.unwrap();
+        device.close();
+
+        assert_eq!(tbs_close_log::count(), closes);
+        assert!(device.context.is_none());
+        assert_eq!(device.get_tpm_info(), 0);
+    }
+
+    #[test]
+    fn owned_context_is_closed_on_drop() {
+        let closes = tbs_close_log::count();
+
+        let device = owned_device(fake_context());
+        drop(device);
+
+        assert_eq!(tbs_close_log::count(), closes + 1);
+    }
+
+    #[test]
+    fn owned_context_is_closed_by_close() {
+        let closes = tbs_close_log::count();
+
+        let mut device = owned_device(fake_context());
+        device.close();
+
+        assert_eq!(tbs_close_log::count(), closes + 1);
+        assert!(device.context.is_none());
+        assert_eq!(device.get_tpm_info(), 0);
+
+        // Dropping the already-closed device must not close a second time.
+        drop(device);
+        assert_eq!(tbs_close_log::count(), closes + 1);
+    }
+
+    #[test]
+    fn disconnected_device_rejects_commands() {
+        let mut device = TpmTbsDevice::new();
+
+        assert!(matches!(
+            device.dispatch_command(&[0u8; 12]),
+            Err(TpmError::NotConnected)
+        ));
+        assert!(matches!(
+            device.response_is_ready(),
+            Err(TpmError::NotConnected)
+        ));
     }
 }
 
@@ -634,6 +818,28 @@ pub struct TpmTbsDevice {
     dev_tpm: Option<File>,
     socket: Option<TcpStream>,
     tpm_info: u32,
+}
+
+/// Upper bound on the size of a response frame accepted from a socket peer.
+///
+/// The length prefix of a socket response is attacker-controlled, so it is checked against this
+/// bound before it is used to size an allocation. The value is the reference implementation's
+/// `MAX_RESPONSE_SIZE`, which is also the fixed buffer the `/dev/tpm*` path reads into.
+#[cfg(target_os = "linux")]
+const MAX_SOCKET_RESPONSE_SIZE: usize =
+    crate::tpm_types::Implementation::MAX_RESPONSE_SIZE.0 as usize;
+
+/// How long a single socket read or write may block before it is failed.
+///
+/// Without this a wedged peer holds the calling thread forever.
+#[cfg(target_os = "linux")]
+const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[cfg(target_os = "linux")]
+impl Default for TpmTbsDevice {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -662,8 +868,14 @@ impl TpmTbsDevice {
         }
 
         // Connect to user mode TRM
-        let mut socket = TcpStream::connect("127.0.0.1:2323")
+        let socket = TcpStream::connect("127.0.0.1:2323")
             .map_err(|e| TpmError::IoError(format!("Failed to connect to user TRM: {}", e)))?;
+        socket
+            .set_read_timeout(Some(SOCKET_TIMEOUT))
+            .map_err(|e| TpmError::IoError(format!("Failed to set read timeout: {}", e)))?;
+        socket
+            .set_write_timeout(Some(SOCKET_TIMEOUT))
+            .map_err(|e| TpmError::IoError(format!("Failed to set write timeout: {}", e)))?;
 
         // No handshake needed with user mode TRM
 
@@ -689,36 +901,30 @@ impl TpmDevice for TpmTbsDevice {
         }
 
         // Try to open the direct TPM device
-        match OpenOptions::new().read(true).write(true).open("/dev/tpm0") {
-            Ok(file) => {
-                self.dev_tpm = Some(file);
-                self.tpm_info = TpmConnInfo::TpmTbsConn as u32
-                    | TpmConnInfo::TpmNoPowerCtl as u32
-                    | TpmConnInfo::TpmNoLocalityCtl as u32;
-                return Ok(true);
-            }
-            Err(_) => {
-                // Try TPM resource manager
-                match OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open("/dev/tpmrm0")
-                {
-                    Ok(file) => {
-                        self.dev_tpm = Some(file);
-                        self.tpm_info = TpmConnInfo::TpmTbsConn as u32
-                            | TpmConnInfo::TpmUsesTrm as u32
-                            | TpmConnInfo::TpmNoPowerCtl as u32
-                            | TpmConnInfo::TpmNoLocalityCtl as u32;
-                        return Ok(true);
-                    }
-                    Err(_) => {
-                        // Try user mode TRM
-                        return self.connect_to_linux_user_mode_trm();
-                    }
-                }
-            }
+        if let Ok(file) = OpenOptions::new().read(true).write(true).open("/dev/tpm0") {
+            self.dev_tpm = Some(file);
+            self.tpm_info = TpmConnInfo::TpmTbsConn as u32
+                | TpmConnInfo::TpmNoPowerCtl as u32
+                | TpmConnInfo::TpmNoLocalityCtl as u32;
+            return Ok(true);
         }
+
+        // Try TPM resource manager
+        if let Ok(file) = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/tpmrm0")
+        {
+            self.dev_tpm = Some(file);
+            self.tpm_info = TpmConnInfo::TpmTbsConn as u32
+                | TpmConnInfo::TpmUsesTrm as u32
+                | TpmConnInfo::TpmNoPowerCtl as u32
+                | TpmConnInfo::TpmNoLocalityCtl as u32;
+            return Ok(true);
+        }
+
+        // Try user mode TRM
+        self.connect_to_linux_user_mode_trm()
     }
 
     fn close(&mut self) {
@@ -786,6 +992,14 @@ impl TpmDevice for TpmTbsDevice {
                     .map_err(|e| TpmError::IoError(e.to_string()))?;
                 let len = u32::from_be_bytes(len_buf) as usize;
 
+                // The peer chooses this length, so refuse to allocate on its word alone.
+                if len > MAX_SOCKET_RESPONSE_SIZE {
+                    return Err(TpmError::IoError(format!(
+                        "TPM response of {} bytes exceeds the {} byte maximum",
+                        len, MAX_SOCKET_RESPONSE_SIZE
+                    )));
+                }
+
                 // Read the response data
                 let mut resp = vec![0u8; len];
                 socket
@@ -850,6 +1064,66 @@ impl TpmDevice for TpmTbsDevice {
 
     fn get_tpm_info(&self) -> u32 {
         self.tpm_info
+    }
+}
+
+// Placeholder implementation for platforms with no system TPM interface of their own.
+//
+// Windows reaches its TPM through TBS and Linux through `/dev/tpm*` or a user-mode resource
+// manager; nothing equivalent is implemented for macOS or the BSDs. Rather than leave the crate
+// without a `TpmTbsDevice` there - which fails to build with an error that points at the wrong
+// place - the type exists everywhere and reports the platform as unsupported at run time. Callers
+// on such a platform can still drive a TPM by passing their own [`TpmDevice`] to `Tpm2::new`.
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+pub struct TpmTbsDevice;
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+impl Default for TpmTbsDevice {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+impl TpmTbsDevice {
+    pub fn new() -> Self {
+        TpmTbsDevice
+    }
+
+    fn unsupported<T>(operation: &str) -> Result<T, TpmError> {
+        Err(TpmError::NotSupported(format!(
+            "{}: this platform has no built-in TPM device; supply a TpmDevice implementation",
+            operation
+        )))
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+impl TpmDevice for TpmTbsDevice {
+    fn connect(&mut self) -> Result<bool, TpmError> {
+        Self::unsupported("connect")
+    }
+
+    fn close(&mut self) {}
+
+    fn dispatch_command(&mut self, _cmd_buf: &[u8]) -> Result<(), TpmError> {
+        Self::unsupported("dispatch_command")
+    }
+
+    fn get_response(&mut self) -> Result<Vec<u8>, TpmError> {
+        Self::unsupported("get_response")
+    }
+
+    fn response_is_ready(&self) -> Result<bool, TpmError> {
+        Self::unsupported("response_is_ready")
+    }
+
+    fn has_flag(&self, _flag: u32) -> bool {
+        false
+    }
+
+    fn get_tpm_info(&self) -> u32 {
+        0
     }
 }
 

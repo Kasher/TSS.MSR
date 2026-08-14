@@ -1324,18 +1324,8 @@ pub fn create_tpm_with_crypto(crypto: CryptoProvider) -> Tpm2 {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        use crate::device::{TpmTbsDevice, TpmTcpDevice};
-
-        // Try to create a TBS device first (for Linux/Unix), falling back to TCP simulator
-        let mut tbs_device = TpmTbsDevice::new();
-        match tbs_device.connect() {
-            Ok(_) => Tpm2::new(tbs_device, crypto),
-            Err(_) => {
-                // Fall back to TCP simulator
-                let tcp_device = TpmTcpDevice::new("127.0.0.1".to_string(), 2321);
-                Tpm2::new(Box::new(tcp_device), crypto)
-            }
-        }
+        use crate::device::TpmTbsDevice;
+        Tpm2::new(Box::new(TpmTbsDevice::new()), crypto)
     }
 }
 
