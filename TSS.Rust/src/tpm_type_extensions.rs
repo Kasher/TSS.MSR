@@ -371,8 +371,12 @@ impl TPMS_PCR_SELECTION {
     pub fn new_from_pcr_u32(hash_alg: TPM_ALG_ID, pcr: u32) -> Self {
         let mut size = 3;
 
+        // `pcr_bytes` is already the byte index that holds `pcr`'s bit, so the array must grow
+        // whenever that index does not fit in `size` bytes. Dividing it by 8 again here compared
+        // the wrong quantity and left `size` at 3 for every PCR up to 191, so selecting PCR 24
+        // (the first PCR outside the standard 0-23 range) indexed past the end of the vector.
         let pcr_bytes = pcr / 8;
-        if ((pcr_bytes / 8) + 1) > size {
+        if pcr_bytes + 1 > size {
             size = pcr_bytes + 1;
         }
 
@@ -396,6 +400,53 @@ impl TPMS_PCR_SELECTION {
         }
 
         TPMS_PCR_SELECTION::new(hash_alg, &pcr_select)
+    }
+}
+
+#[cfg(test)]
+mod pcr_selection_tests {
+    use super::*;
+
+    #[test]
+    fn pcr_selection_is_unchanged_for_the_standard_pcr_range() {
+        // PCRs 0-23 are the standard TPM range and must keep producing the historical 3-byte
+        // wire format: it is part of every existing PCR policy, so any change here would
+        // silently break policy digests computed against the old layout.
+        for pcr in 0..24u32 {
+            let selection = TPMS_PCR_SELECTION::new_from_pcr_u32(TPM_ALG_ID::SHA256, pcr);
+            assert_eq!(selection.pcrSelect.len(), 3);
+
+            let mut expected = vec![0u8; 3];
+            expected[(pcr / 8) as usize] = 1 << (pcr % 8);
+            assert_eq!(selection.pcrSelect, expected);
+        }
+    }
+
+    #[test]
+    fn pcr_selection_handles_a_pcr_beyond_the_first_three_bytes() {
+        // PCR 24 is the first PCR outside the standard 0-23 range and previously panicked
+        // because the growth check divided the byte index by 8 a second time.
+        let selection = TPMS_PCR_SELECTION::new_from_pcr_u32(TPM_ALG_ID::SHA256, 24);
+
+        assert_eq!(selection.pcrSelect.len(), 4);
+        assert_eq!(selection.pcrSelect, vec![0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn pcr_selection_handles_a_large_pcr_value() {
+        let selection = TPMS_PCR_SELECTION::new_from_pcr_u32(TPM_ALG_ID::SHA256, 200);
+
+        assert_eq!(selection.pcrSelect.len(), 26);
+        assert_eq!(selection.pcrSelect[25], 1);
+        assert!(selection.pcrSelect[..25].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn pcr_selection_sets_the_correct_bit() {
+        let selection = TPMS_PCR_SELECTION::new_from_pcr_u32(TPM_ALG_ID::SHA256, 19);
+
+        // PCR 19 is bit 3 (0b0000_1000) of byte 2 (19 / 8 == 2, 19 % 8 == 3).
+        assert_eq!(selection.pcrSelect, vec![0, 0, 0b0000_1000]);
     }
 }
 
