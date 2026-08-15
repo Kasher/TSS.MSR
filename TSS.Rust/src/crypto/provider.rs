@@ -143,6 +143,16 @@ pub struct RsaOps {
     ///
     /// A `false` result means the signature did not verify. An `Err` means the verification could
     /// not be performed at all, for instance because the key or the hash algorithm was rejected.
+    ///
+    /// A signature that is not a candidate at all — one whose length differs from the modulus, or
+    /// whose value is at or above it — is `false` rather than `Err`. This follows from the
+    /// sentence above rather than adding to it: neither the key nor the hash algorithm is at
+    /// fault in that case, and those are what `Err` is reserved for. Both shapes are chosen by
+    /// whoever supplied the signature and say nothing about the caller, so a backend that
+    /// reported them as failures would divert a caller such as
+    /// [`TPMT_PUBLIC::validate_certify`](crate::tpm_types::TPMT_PUBLIC::validate_certify) out of
+    /// its `false` branch on input a remote party controls. A backend layered on an API that
+    /// distinguishes these from an ordinary bad signature has to fold them in itself.
     pub pkcs1v15_verify: RsaPkcs1v15VerifyFn,
 
     /// Generate an RSA key pair, returning the modulus and the first prime.

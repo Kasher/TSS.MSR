@@ -575,6 +575,43 @@ mod tests {
     }
 
     #[test]
+    fn rsa_verify_rejects_a_malformed_signature_rather_than_failing() -> Result<(), TpmError> {
+        let key = Crypto::rsa_generate_keypair(&SOFTWARE_PROVIDER, 2048, &RSA_DEFAULT_EXPONENT)?;
+        let digest = Sha256::digest(b"malformed signature rejection").to_vec();
+
+        // A signature that cannot verify is an answer rather than a failure, so each of these is
+        // `Ok(false)` and none of them is `Err`. None is reachable only by mistake either: a
+        // signature arrives from whoever sent it, and nothing stops it being short or numerically
+        // at or above the modulus. The CNG provider is held to the same by
+        // `pkcs1v15_verification_agrees_with_the_software_provider`, and the two backends are
+        // interchangeable only while both answer this way.
+        let not_below_modulus = vec![0xffu8; key.modulus.len()];
+        let one_byte_short = vec![0x01u8; key.modulus.len() - 1];
+        let one_byte_long = vec![0x01u8; key.modulus.len() + 1];
+
+        let candidates: [(&str, Vec<u8>); 4] = [
+            ("a signature not below the modulus", not_below_modulus),
+            ("a signature one byte short", one_byte_short),
+            ("a signature one byte long", one_byte_long),
+            ("an empty signature", Vec::new()),
+        ];
+
+        for (description, candidate) in candidates {
+            let verified = Crypto::rsa_pkcs1v15_verify(
+                &SOFTWARE_PROVIDER,
+                &key.modulus,
+                &RSA_DEFAULT_EXPONENT,
+                TPM_ALG_ID::SHA256,
+                &digest,
+                &candidate,
+            )?;
+            assert!(!verified, "the software provider accepted {description}");
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn rsa_sign_rejects_a_zero_prime_instead_of_dividing_by_it() {
         let key = RsaKeyParts {
             modulus: vec![0xff; 256],
