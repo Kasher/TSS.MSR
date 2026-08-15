@@ -858,6 +858,207 @@ mod tests {
         assert_eq!(recovered, secret);
     }
 
+    /// A 2048-bit RSA modulus that never changes between runs.
+    ///
+    /// It is a real generated modulus rather than an invented number, because CNG imports it as a
+    /// public key and a value that is not a plausible key would be rejected on import rather than
+    /// on the signature. Its only job is to make the rejection shapes below the same bytes every
+    /// time; nothing here needs the private half.
+    const FIXED_MODULUS: [u8; 256] = [
+        0xc0, 0x79, 0x3f, 0xce, 0x4e, 0x17, 0xf3, 0xee, 0x11, 0xfd, 0x1b, 0x27, 0xfb, 0xf9, 0x28,
+        0xd7, 0xee, 0x96, 0xe8, 0x4a, 0x5a, 0x15, 0x09, 0x4f, 0xba, 0xf9, 0x4b, 0x73, 0x4f, 0x73,
+        0xcb, 0x0f, 0x4b, 0x23, 0x8a, 0x05, 0x25, 0x07, 0xb2, 0x9f, 0x0b, 0xf4, 0xf7, 0x35, 0x3c,
+        0xe9, 0xa4, 0xab, 0x77, 0x2a, 0x8b, 0x80, 0x70, 0xaf, 0x9b, 0xa6, 0x38, 0x98, 0x3a, 0xee,
+        0xd1, 0xcf, 0xf0, 0x99, 0x16, 0xdc, 0x7c, 0xcd, 0x42, 0x86, 0xd0, 0x5d, 0x2c, 0xa6, 0x98,
+        0xc1, 0x8b, 0xff, 0xd2, 0x0f, 0x2d, 0x1a, 0x04, 0x15, 0x93, 0xd2, 0xb6, 0xab, 0x68, 0x60,
+        0xe8, 0x3c, 0xa3, 0xb7, 0x6c, 0x5b, 0xf2, 0x09, 0x92, 0xf8, 0xed, 0x67, 0xf8, 0x18, 0xb5,
+        0xee, 0x71, 0x62, 0x66, 0x93, 0xdb, 0xd5, 0xfc, 0x8f, 0xa6, 0xce, 0x1b, 0x1e, 0x63, 0xe6,
+        0x79, 0xcf, 0xa8, 0xe7, 0xf9, 0x29, 0xf9, 0xf5, 0xcb, 0x51, 0xa0, 0xc4, 0x41, 0xfd, 0xd8,
+        0xd0, 0xcb, 0x2e, 0xc2, 0x83, 0x8b, 0xda, 0x9b, 0xfb, 0x1f, 0x38, 0x4b, 0x46, 0x14, 0xe1,
+        0x54, 0xbd, 0x82, 0xc1, 0x67, 0xe5, 0x94, 0x4a, 0xdb, 0xf3, 0x88, 0x94, 0xe7, 0x45, 0xa4,
+        0x42, 0xbc, 0x7c, 0xed, 0x33, 0x45, 0xa5, 0xf9, 0x54, 0xe4, 0x9f, 0x7c, 0x6d, 0xf4, 0x8d,
+        0x1e, 0x91, 0x7e, 0x35, 0x96, 0x3e, 0xfa, 0xbb, 0x85, 0xb7, 0x58, 0x3f, 0xa7, 0x10, 0x17,
+        0x0d, 0x4a, 0xbc, 0xf2, 0x1f, 0x25, 0xae, 0xe0, 0x7e, 0x9c, 0x8c, 0x5d, 0xcf, 0x30, 0xfd,
+        0x27, 0x62, 0xb7, 0x66, 0xc6, 0x97, 0x16, 0x30, 0x68, 0x33, 0x79, 0x79, 0xc2, 0xfe, 0xa1,
+        0xbb, 0x5b, 0x92, 0x86, 0x56, 0x02, 0xe9, 0x31, 0x48, 0x08, 0x22, 0x82, 0x36, 0x27, 0x5e,
+        0x84, 0x17, 0x37, 0x06, 0xc5, 0xa5, 0xac, 0x91, 0xe8, 0x40, 0x74, 0x76, 0x23, 0x4d, 0xd4,
+        0x9b,
+    ];
+
+    /// The public exponent the fixed-input RSA cases use.
+    const EXPONENT: [u8; 3] = [0x01, 0x00, 0x01];
+
+    /// Both backends, so a shape is asserted against each in turn.
+    fn providers() -> [(&'static str, &'static CryptoProvider); 2] {
+        [
+            ("the software provider", &SOFTWARE_PROVIDER),
+            ("CNG", &CNG_PROVIDER),
+        ]
+    }
+
+    /// The signature shapes both backends must answer with `Ok(false)`.
+    ///
+    /// Listing them in one place is what makes a new case cheap. The two backends reach the same
+    /// answer through entirely different code, which is the whole reason to check: the `rsa` crate
+    /// folds every verification error into one, while CNG distinguishes a signature that does not
+    /// verify from one it will not attempt at all, and this provider folds those two statuses back
+    /// together itself.
+    ///
+    /// Every shape here must be certain to be rejected, for every modulus and signature that can
+    /// reach it, or this becomes a test that fails once in a while for a reason that is not a
+    /// defect. Each is argued below, and all of them rest on `modulus` being a real RSA modulus:
+    /// full width with its top bit set, which [`FIXED_MODULUS`] is by construction and which a
+    /// caller passing a generated modulus would have to check rather than assume.
+    fn rejected_signatures(modulus: &[u8], signature: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
+        assert_eq!(
+            signature.len(),
+            modulus.len(),
+            "the shapes below are derived from a signature at the modulus width"
+        );
+
+        // Flipping the least significant byte moves the value by at most 255, so it stays below
+        // the modulus, and it always changes the value. This is the case where CNG genuinely
+        // answers STATUS_INVALID_SIGNATURE.
+        let mut in_range = signature.to_vec();
+        if let Some(last) = in_range.last_mut() {
+            *last ^= 0xff;
+        }
+
+        // Changing the most significant byte has to leave a value that is both different from the
+        // signature and still below the modulus, which clearing that byte unconditionally does
+        // not: a signature is zero padded to the modulus width, so roughly one signature in 256
+        // already begins with a zero byte, and clearing it would reproduce the signature exactly
+        // and be accepted. Both branches below are distinct from the signature by construction,
+        // and both are below the modulus, whose leading byte is at least 0x80: the result is under
+        // two units of the leading byte's place value, and the modulus is at least 128 of them.
+        let mut leading_byte_changed = signature.to_vec();
+        leading_byte_changed[0] = if signature[0] == 0 { 1 } else { 0 };
+
+        // Every byte set is the largest value of this width and so is at or above any modulus of
+        // the same width. This is the case CNG reports as STATUS_INVALID_PARAMETER, and it is here
+        // as fixed bytes because flipping the leading byte of a generated signature lands on it
+        // only for some keys: how often depends on the leading byte of the modulus drawn, so a
+        // test that relied on that alone would exercise this status on some runs and not others.
+        let out_of_range = vec![0xffu8; modulus.len()];
+
+        let one_byte_short = signature[1..].to_vec();
+        let one_byte_long = [&[0u8][..], signature].concat();
+
+        vec![
+            ("a corrupted in-range signature", in_range),
+            ("a changed leading byte", leading_byte_changed),
+            ("a signature not below the modulus", out_of_range),
+            ("a signature one byte short", one_byte_short),
+            ("a signature one byte long", one_byte_long),
+            ("an empty signature", Vec::new()),
+        ]
+    }
+
+    /// Runs every rejection shape through both backends, reporting which backend and which shape.
+    ///
+    /// `digest` is the one the signature was made over, where there is one, so that the corrupted
+    /// in-range shape is judged against a digest its uncorrupted form would verify under. A shape
+    /// that were accidentally a no-op would otherwise still pass here.
+    fn assert_every_shape_is_rejected(
+        modulus: &[u8],
+        exponent: &[u8],
+        digest: &[u8],
+        signature: &[u8],
+    ) {
+        for (backend, provider) in providers() {
+            for (description, candidate) in rejected_signatures(modulus, signature) {
+                let verified = (provider.rsa.pkcs1v15_verify)(
+                    modulus,
+                    exponent,
+                    TPM_ALG_ID::SHA256,
+                    digest,
+                    &candidate,
+                )
+                .unwrap_or_else(|e| {
+                    panic!("{backend} reported {description} as a failure rather than rejecting it: {e}")
+                });
+
+                // A signature that will not verify is an answer rather than a failure, whichever
+                // backend is answering. A backend that returns `Err` here diverts a caller such as
+                // `validate_certify` from its `false` branch into error handling, on input a
+                // remote party chooses.
+                assert!(!verified, "{backend} accepted {description}");
+            }
+        }
+    }
+
+    /// The rejection shapes over bytes that are identical on every run.
+    ///
+    /// Nothing here is generated, so this test either always passes or always fails, and a failure
+    /// is reproducible by running it again. That matters because the shapes are the regression
+    /// test for a provider that answered some of them with `Err`, and a test that samples a fresh
+    /// key each run can only ever say that today's key was fine.
+    #[test]
+    fn pkcs1v15_rejections_are_the_same_on_every_run() {
+        // Halving the leading byte of the modulus gives a value of the right width that is
+        // certainly below it, which is all a rejection shape needs. Standing one in for a real
+        // signature is what lets this test fix every byte without holding a private key.
+        let mut signature_shaped = FIXED_MODULUS.to_vec();
+        signature_shaped[0] >>= 1;
+
+        assert_every_shape_is_rejected(&FIXED_MODULUS, &EXPONENT, &[0x5au8; 32], &signature_shaped);
+    }
+
+    /// The boundary the status map leaves in place.
+    ///
+    /// `rsa_pkcs1v15_verify` answers both `STATUS_INVALID_SIGNATURE` and
+    /// `STATUS_INVALID_PARAMETER` with `Ok(false)`, so no verdict on a signature comes back as an
+    /// error. What is still an error is a verification that never reached the signature: the key
+    /// has to import and the hash algorithm has to have a CNG name before `BCryptVerifySignature`
+    /// is called at all, and both of those fail ahead of the status map rather than through it.
+    /// That is the distinction `Err` still carries, and it is the order of the three steps in
+    /// `rsa_pkcs1v15_verify` that carries it, so it is asserted rather than assumed.
+    ///
+    /// Nothing here claims that a signature CNG refuses to attempt is an error. Under the status
+    /// map it is not, which is what `pkcs1v15_rejections_are_the_same_on_every_run` pins from the
+    /// other side.
+    #[test]
+    fn verification_still_fails_rather_than_rejects_when_it_cannot_be_performed() {
+        let signature = [0x01u8; 256];
+        let digest = [0x5au8; 32];
+
+        // The contrast the two cases below are read against: this call is a verdict on the
+        // signature rather than an error, and each of them differs from it in one respect only.
+        // Without it they would pass just as well against a provider that errored on everything.
+        let verified = (CNG_PROVIDER.rsa.pkcs1v15_verify)(
+            &FIXED_MODULUS,
+            &EXPONENT,
+            TPM_ALG_ID::SHA256,
+            &digest,
+            &signature,
+        )
+        .expect("a signature below the modulus is judged rather than refused");
+        assert!(!verified, "a signature that cannot verify was accepted");
+
+        assert!(
+            (CNG_PROVIDER.rsa.pkcs1v15_verify)(
+                &[],
+                &EXPONENT,
+                TPM_ALG_ID::SHA256,
+                &digest,
+                &signature
+            )
+            .is_err(),
+            "a key CNG cannot import was reported as a bad signature"
+        );
+        assert!(
+            (CNG_PROVIDER.rsa.pkcs1v15_verify)(
+                &FIXED_MODULUS,
+                &EXPONENT,
+                TPM_ALG_ID::SM3_256,
+                &digest,
+                &signature
+            )
+            .is_err(),
+            "a hash algorithm CNG does not offer was reported as a bad signature"
+        );
+    }
+
     #[test]
     fn pkcs1v15_verification_agrees_with_the_software_provider() {
         let key = (SOFTWARE_PROVIDER.rsa.generate_keypair)(2048, &[0x01, 0x00, 0x01]).unwrap();
