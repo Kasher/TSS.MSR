@@ -31,6 +31,14 @@ namespace CodeGen
 
         public static readonly string[] ForceJustOneReturnParm = new string[] { "Load", "LoadExternal" };
 
+        /// <summary> Spec names of the structures a default-constructed instance of which must marshal
+        /// as an empty (zero size) object instead of reporting the absent union field as an error. </summary>
+        /// <remarks> Only TPMT_SENSITIVE relies on this: TPM2_LoadExternal takes an empty inPrivate
+        /// sized object when only the public part of a key is loaded. Currently honored by the Rust
+        /// generator only; the other target languages apply the convention to every structure whose
+        /// union selector is its first marshaled field. </remarks>
+        public static readonly string[] EmptyMarshalingStructs = new string[] { "TPMT_SENSITIVE" };
+
 
         protected CodeGenBase(string rootDir, string snipsFileName = null)
         {
@@ -104,7 +112,9 @@ namespace CodeGen
             return elements;
         }
 
-        public static List<string> GetToTpmFieldsMarshalOps(StructField[] fields)
+        /// <param name="structSpecName"> Spec name of the structure being marshaled. Only supplied by
+        /// the Rust generator, which limits the empty-object convention to EmptyMarshalingStructs. </param>
+        public static List<string> GetToTpmFieldsMarshalOps(StructField[] fields, string structSpecName = null)
         {
             var marshalOps = new List<string>();
             string fieldNamePrefix = TargetLang.Rust ? "&" : "";
@@ -159,9 +169,11 @@ namespace CodeGen
                         break;
 
                     case MarshalType.UnionSelector:
-                        // A trick to allow using default-constructed TPMT_SENSITIVE as an empty (non-marshaling) object
+                        // A trick to allow using default-constructed TPMT_SENSITIVE as an empty (non-marshaling) object.
+                        // Rust restricts it to EmptyMarshalingStructs, so that any other absent union is reported.
                         string unionField = ThisMember + f.RelatedUnion.Name;
-                        if (f == fields.First())
+                        if (f == fields.First() &&
+                            (!TargetLang.Rust || EmptyMarshalingStructs.Contains(structSpecName)))
                         {
                             string earlyReturn = TargetLang.Rust ? " { return Ok(()) }" : " return";
                             marshalOps.Add(TargetLang.IfNull(unionField) + earlyReturn);

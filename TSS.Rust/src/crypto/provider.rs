@@ -10,10 +10,12 @@
 //! through a call chain costs no more than passing a pointer. This mirrors how `jsonwebtoken`
 //! models its own pluggable backend.
 //!
-//! Deliberately, there is no process-wide default provider. TSS.Rust is built as a `cdylib` as
-//! well as an `rlib`, and hosts that load and unload it repeatedly would have to reason about the
-//! lifetime of any global. Requiring the provider at the call site also lets a single process use
-//! two backends at once, which is what makes cross-provider equivalence testing possible.
+//! Deliberately, there is no process-wide default provider. A global has to be installed by
+//! whoever gets to it first, and in a library that is not a decision any one caller owns: an
+//! application and a dependency that both use TSS.Rust would race to set it, and the loser would
+//! silently run against a backend it did not choose. Requiring the provider at the call site also
+//! lets a single process use two backends at once, which is what makes cross-provider equivalence
+//! testing possible.
 //!
 //! Only primitives belong here. Logic defined by the TPM 2.0 specification — digest sizes, KDFa,
 //! signature validation — is built on top of these primitives by [`Crypto`](super::Crypto) and is
@@ -143,6 +145,16 @@ pub struct RsaOps {
     ///
     /// A `false` result means the signature did not verify. An `Err` means the verification could
     /// not be performed at all, for instance because the key or the hash algorithm was rejected.
+    ///
+    /// A signature that is not a candidate at all — one whose length differs from the modulus, or
+    /// whose value is at or above it — is `false` rather than `Err`. This follows from the
+    /// sentence above rather than adding to it: neither the key nor the hash algorithm is at
+    /// fault in that case, and those are what `Err` is reserved for. Both shapes are chosen by
+    /// whoever supplied the signature and say nothing about the caller, so a backend that
+    /// reported them as failures would divert a caller such as
+    /// [`TrustedPublic::validate_certify`](crate::tpm_type_extensions::TrustedPublic::validate_certify)
+    /// out of its `false` branch on input a remote party controls. A backend layered on an API
+    /// that distinguishes these from an ordinary bad signature has to fold them in itself.
     pub pkcs1v15_verify: RsaPkcs1v15VerifyFn,
 
     /// Generate an RSA key pair, returning the modulus and the first prime.

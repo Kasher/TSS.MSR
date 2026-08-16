@@ -33,7 +33,7 @@ use tss_msr_rs::{
     crypto::{software_provider::SOFTWARE_PROVIDER, Crypto},
     device::{TpmDevice, TpmTbsDevice}, error::TpmError,
     policy::{self, PolicyTree, PolicyCommandCode, PolicyLocality, PolicyOr, PolicyPassword},
-    tpm2_impl::*, tpm_structure::{TpmEnum}, tpm_types::*
+    tpm2_impl::*, tpm_structure::{TpmEnum}, tpm_type_extensions::TrustedPublic, tpm_types::*
 };
 
 lazy_static::lazy_static! {
@@ -235,7 +235,7 @@ fn attestation(tpm: &mut Tpm2) -> Result<(), TpmError> {
     
     // Set up PCR selection for the quote
     let pcrs_to_quote = TPMS_PCR_SELECTION::get_selection_array(
-        TPM_ALG_ID::SHA1, 7 );
+        TPM_ALG_ID::SHA1, 7 )?;
 
     // Do an event to make sure the value is non-zero
     tpm.PCR_Event(&TPM_HANDLE::pcr(7), &vec![1, 2, 3])?;
@@ -278,11 +278,19 @@ fn attestation(tpm: &mut Tpm2) -> Result<(), TpmError> {
         return Err(TpmError::InvalidParameter);
     } ;
 
-    // Get a key attestation.  For simplicity we have the signingKey self-certify b
+    // Get a key attestation. The key that signs the attestation and the key being attested must
+    // be different: a key certifying itself says only that whoever produced the public area also
+    // produced the attestation over it, which is no evidence at all.
     let key_nonce: Vec<u8> = vec![0, 9, 1, 1, 2, 3];
     println!(">> Key Quoting, using nonce {:?}", key_nonce);
 
-    let key_quote = tpm.Certify(&sig_key, &sig_key, &key_nonce, &TPMU_SIG_SCHEME::create(TPM_ALG_ID::NULL)?)?;
+    let key_to_certify = make_child_signing_key(tpm, &primary_key, false)?;
+
+    // The primary was only ever needed to create these two children, and a TPM guarantees room
+    // for no more than three transient objects at once.
+    tpm.FlushContext(&primary_key)?;
+
+    let key_quote = tpm.Certify(&key_to_certify, &sig_key, &key_nonce, &TPMU_SIG_SCHEME::create(TPM_ALG_ID::NULL)?)?;
 
     if let Some(TPMU_ATTEST::certify(certify_attest)) = &key_quote.certifyInfo.attested {
         println!("Key certification obtained successfully");
@@ -295,15 +303,26 @@ fn attestation(tpm: &mut Tpm2) -> Result<(), TpmError> {
         return Err(TpmError::InvalidParameter);
     } ;
 
-    let pub_key = tpm.ReadPublic(&sig_key)?;
+    let certified_public = tpm.ReadPublic(&key_to_certify)?.outPublic;
+    let signing_public = tpm.ReadPublic(&sig_key)?.outPublic;
 
-    if (pub_key.outPublic.validate_certify(&SOFTWARE_PROVIDER, &pub_key.outPublic, &key_nonce, &key_quote)?) {
-        println!("Key certification signature verification SUCCESSFUL! ");
-    } else {
-        println!("Key certification signature verification FAILED! ");
-    }
+    // Validating an attestation says nothing until the attestation key's provenance has been
+    // established somewhere else. There is something to establish it against here: TPM2_Load
+    // returned this key's Name, and this library checked that Name against the public area it
+    // sent, so the Name is already in `sig_key`. Pinning against it costs nothing and is a real
+    // check - it rejects a resource manager that answers this ReadPublic with a different key.
+    //
+    // Code attesting a TPM it does not own has to obtain that Name from somewhere else entirely:
+    // activate a credential against an endorsement key with a manufacturer certificate, or
+    // validate an AK certificate chain, and pass the Name that yields to
+    // `TrustedPublic::from_activated_credential` or `TrustedPublic::from_pinned_name`.
+    let signing_key = TrustedPublic::from_pinned_name(signing_public, &sig_key.get_name()?, &SOFTWARE_PROVIDER)?;
+
+    signing_key.validate_certify(&SOFTWARE_PROVIDER, &certified_public, &key_nonce, &key_quote)?;
+    println!("Key certification signature verification SUCCESSFUL! ");
 
     // // Clean up - flush keys from TPM
+    tpm.FlushContext(&key_to_certify)?;
     tpm.FlushContext(&sig_key)?;
     println!("Cleaned up keys from TPM");
 
@@ -468,7 +487,7 @@ fn pcr_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("PCR 16 reset");
 
     // Read the PCR value (should be all zeros after reset)
-    let pcr_selection = TPMS_PCR_SELECTION::get_selection_array(TPM_ALG_ID::SHA256, 16);
+    let pcr_selection = TPMS_PCR_SELECTION::get_selection_array(TPM_ALG_ID::SHA256, 16)?;
     let pcr_vals = tpm.PCR_Read(&pcr_selection)?;
     println!("PCR 16 after reset: {:?}", pcr_vals.pcrValues);
 
@@ -1101,7 +1120,7 @@ fn unseal_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.PCR_Event(&TPM_HANDLE::pcr(pcr), &vec![1, 2, 3, 4])?;
 
     // Read the current PCR value
-    let pcr_selection = TPMS_PCR_SELECTION::get_selection_array(bank, pcr);
+    let pcr_selection = TPMS_PCR_SELECTION::get_selection_array(bank, pcr)?;
     let pcr_vals = tpm.PCR_Read(&pcr_selection)?;
     println!("PCR {} value: {:?}", pcr, pcr_vals.pcrValues);
 
@@ -1201,7 +1220,7 @@ fn policy_or_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     // Set PCR to a known value
     tpm.PCR_Event(&TPM_HANDLE::pcr(pcr), &vec![1, 2, 3, 4])?;
 
-    let pcr_selection = TPMS_PCR_SELECTION::get_selection_array(bank, pcr);
+    let pcr_selection = TPMS_PCR_SELECTION::get_selection_array(bank, pcr)?;
     let pcr_vals = tpm.PCR_Read(&pcr_selection)?;
 
     // Compute the PCR digest
@@ -1699,7 +1718,7 @@ fn policy_pcr_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     // Set PCR to a known value
     tpm.PCR_Event(&TPM_HANDLE::pcr(pcr), &vec![1, 2, 3, 4])?;
 
-    let pcr_selection = TPMS_PCR_SELECTION::get_selection_array(bank, pcr);
+    let pcr_selection = TPMS_PCR_SELECTION::get_selection_array(bank, pcr)?;
     let pcr_vals = tpm.PCR_Read(&pcr_selection)?;
 
     // Compute the PCR digest
@@ -2067,13 +2086,42 @@ fn async_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
 fn session_encryption_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     announce("SessionEncryption Sample");
 
-    // Session encryption is transparent to the application programmer.
-    // Create a session with decrypt/encrypt attributes and the library handles
-    // the AES-CFB encryption/decryption of the first parameter automatically.
+    // Session encryption is transparent to the application programmer: set decrypt/encrypt on
+    // the session and the library handles the AES-CFB of the first parameter.
+    //
+    // What is NOT transparent, and is the point of this sample, is where the encryption key
+    // comes from. It is KDFa(hashAlg, sessionKey, "CFB", nonceNewer, nonceOlder). Both nonces
+    // travel in the clear, so unless `sessionKey` itself was derived from a secret, the key is a
+    // pure function of values anyone watching the bus already has. An unsalted, unbound session
+    // is exactly that case, and this library now refuses it rather than pretending to encrypt.
+    //
+    // So: salt the session. The salt is generated inside the library, encrypted to a key we
+    // nominate, and never appears on the wire in the clear.
+    let salt_key = make_storage_primary(tpm)?;
+    let salt_key_public = tpm.ReadPublic(&salt_key)?.outPublic;
+    // TPM2_CreatePrimary already returned this key's Name, and this library checked it against
+    // the public area the same command returned, so there is something to pin against and no
+    // reason to assert trust bare. `from_pinned_name` recomputes the Name of what ReadPublic
+    // answered and rejects it unless it matches. Adopting a key this process did not create means
+    // obtaining its Name from outside the channel - an enrolment record, a signed manifest.
+    let salt_key_public = TrustedPublic::from_pinned_name(salt_key_public, &salt_key.get_name()?, &SOFTWARE_PROVIDER)?;
+
+    // Show what the library now refuses, so the reason is on the page rather than buried in a
+    // doc comment somewhere.
+    let vacuous = tpm.start_auth_session_full(
+        TPM_SE::HMAC, TPM_ALG_ID::SHA256,
+        TPMA_SESSION::continueSession | TPMA_SESSION::decrypt,
+        TPMT_SYM_DEF::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
+    );
+    match vacuous {
+        Err(e) => println!("Unsalted, unbound parameter encryption correctly refused: {}", e),
+        Ok(_) => println!("Warning: an unsalted, unbound encrypting session was allowed"),
+    }
 
     // Part 1: Encrypt commands TO the TPM (decrypt attribute)
     println!(">> Encrypt commands to TPM (TPMA_SESSION::decrypt)");
-    let sess = tpm.start_auth_session_full(
+    let sess = tpm.start_salted_auth_session(
+        &salt_key, &salt_key_public,
         TPM_SE::HMAC, TPM_ALG_ID::SHA256,
         TPMA_SESSION::continueSession | TPMA_SESSION::decrypt,
         TPMT_SYM_DEF::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
@@ -2094,21 +2142,19 @@ fn session_encryption_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     // Part 2: Encrypt responses FROM the TPM (encrypt attribute)
     println!("\n>> Encrypt responses from TPM (TPMA_SESSION::encrypt)");
 
-    // Create a primary key so we have something to read
-    let storage_primary = make_storage_primary(tpm)?;
-
     // Read public key without encryption
-    let plaintext_read = tpm.ReadPublic(&storage_primary)?;
+    let plaintext_read = tpm.ReadPublic(&salt_key)?;
 
     // Make an encrypting session for response
-    let enc_sess = tpm.start_auth_session_full(
+    let enc_sess = tpm.start_salted_auth_session(
+        &salt_key, &salt_key_public,
         TPM_SE::HMAC, TPM_ALG_ID::SHA256,
         TPMA_SESSION::continueSession | TPMA_SESSION::encrypt,
         TPMT_SYM_DEF::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
     )?;
 
     // ReadPublic with encrypted response - the library should decrypt automatically
-    let encrypted_read = tpm.with_session(enc_sess.clone()).ReadPublic(&storage_primary)?;
+    let encrypted_read = tpm.with_session(enc_sess.clone()).ReadPublic(&salt_key)?;
     let enc_sess = tpm.last_session().unwrap();
 
     // Compare: the decrypted response should match the plaintext
@@ -2121,7 +2167,7 @@ fn session_encryption_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     }
 
     tpm.FlushContext(&session_handle(&enc_sess))?;
-    tpm.FlushContext(&storage_primary)?;
+    tpm.FlushContext(&salt_key)?;
 
     println!("SessionEncryption sample completed successfully");
     Ok(())
@@ -2154,7 +2200,9 @@ fn policy_signed_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
             })),
             unique: Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA::default())),
         },
-        ..Default::default()
+        // Spelled out rather than filled in from Default::default(): TSS_KEY zeroizes
+        // privatePart on drop, and a type with a Drop cannot have fields moved out of it.
+        privatePart: Vec::new(),
     };
     sw_key.create_key(&SOFTWARE_PROVIDER)?;
     println!("Created software RSA-2048 signing key");
@@ -2263,7 +2311,9 @@ fn policy_authorize_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
             })),
             unique: Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA::default())),
         },
-        ..Default::default()
+        // Spelled out rather than filled in from Default::default(): TSS_KEY zeroizes
+        // privatePart on drop, and a type with a Drop cannot have fields moved out of it.
+        privatePart: Vec::new(),
     };
     sw_key.create_key(&SOFTWARE_PROVIDER)?;
     println!("Created authorizing SW key");
@@ -2534,30 +2584,42 @@ fn policy_tree_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     Ok(())
 }
 
-/// Demonstrates a salted (seeded) auth session. The salt is RSA-OAEP encrypted
-/// to a storage primary's public key, providing protection even when authValues
-/// are known or can be inferred.
+/// Demonstrates a salted (seeded) auth session. The salt is generated inside
+/// `start_salted_auth_session`, sized to the digest of the salt key's `nameAlg` -- the size the
+/// TPM requires, which is not necessarily the session hash -- and RSA-OAEP encrypted to a storage
+/// primary's public key. That gives the session key an input an eavesdropper does not have, which
+/// is what parameter encryption and HMAC integrity need.
 fn seeded_session_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     announce("SeededSession");
 
     // Create a storage primary to use as the salt-encryption key
     let salt_key = make_storage_primary(tpm)?;
 
-    // Generate a random salt
-    let salt = Crypto::get_random(&SOFTWARE_PROVIDER, 20)?;
-    println!("Salt ({} bytes): {:?}", salt.len(), &salt[..8]);
+    // The salt is encrypted to whatever public area we nominate here, so nominating one we read
+    // over the same channel we are trying to protect would be pointless: a man in the middle who
+    // answers the ReadPublic learns the salt and forges every HMAC afterwards. This library
+    // therefore will not read it for us -- the trust decision has to be made explicitly.
+    //
+    // TPM2_CreatePrimary already returned this key's Name, so the decision here can rest on a
+    // check rather than on an assertion: `from_pinned_name` rejects a ReadPublic answered with a
+    // different key. Be precise about what that is worth. This is a key this process created
+    // moments ago on a locally attached TPM, and on Windows a resource manager still sits between
+    // this process and the chip -- it was equally present when the key was created, so a
+    // compromised one could have answered both. What the pinning buys is that the two answers
+    // must agree; what makes the residual risk acceptable is that an adversary in that position
+    // already has privileged local access. Code adopting a key it did not create has to get the
+    // Name from outside the channel entirely and pin against that.
+    let salt_key_public = tpm.ReadPublic(&salt_key)?.outPublic;
+    let salt_key_public = TrustedPublic::from_pinned_name(salt_key_public, &salt_key.get_name()?, &SOFTWARE_PROVIDER)?;
+    println!("Pinned salt key Name: {:?}", &salt_key_public.name()[..8]);
 
-    // Start a salted HMAC session.
-    // start_auth_session_ex will ReadPublic on the salt key, encrypt the salt
-    // with RSA-OAEP (label "SECRET"), and derive the session key via KDFa.
-    let sess = tpm.start_auth_session_ex(
-        &salt_key,                                  // tpmKey for salt encryption
-        &TPM_HANDLE::new(TPM_RH::NULL.get_value()), // no binding
+    let sess = tpm.start_salted_auth_session(
+        &salt_key,
+        &salt_key_public,
         TPM_SE::HMAC,
         TPM_ALG_ID::SHA256,
         TPMA_SESSION::continueSession,
         TPMT_SYM_DEF::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
-        &salt,
     )?;
     println!("Started salted HMAC session: {:?}", session_handle(&sess));
 
@@ -2626,13 +2688,12 @@ fn bound_session_inner(tpm: &mut Tpm2, owner_auth: &[u8]) -> Result<(), TpmError
     owner_handle.auth_value = owner_auth.to_vec();
 
     let sess = tpm.start_auth_session_ex(
-        &TPM_HANDLE::new(TPM_RH::NULL.get_value()), // no salt
+        None,                                         // unsalted
         &owner_handle,                                // bound to OWNER
         TPM_SE::HMAC,
         TPM_ALG_ID::SHA256,
         TPMA_SESSION::continueSession,
         TPMT_SYM_DEF::default(),
-        &[],                                          // no salt
     )?;
     println!("Started bound session (bound to OWNER): {:?}", session_handle(&sess));
 

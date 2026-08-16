@@ -11,12 +11,19 @@ use crate::error::TpmError;
 use std::os::raw::c_void;
 #[cfg(target_os = "windows")]
 use std::ptr;
+// The `Win32_System_TpmBaseServices` feature of the `windows` crate is only requested for Windows
+// targets, so this module does not exist anywhere else.
+#[cfg(target_os = "windows")]
 use windows::Win32::System::TpmBaseServices::*;
 
 #[cfg(target_os = "linux")]
 use std::fs::{File, OpenOptions};
 #[cfg(target_os = "linux")]
-use std::os::unix::io::AsRawFd;
+use std::io::{Read, Write};
+#[cfg(target_os = "linux")]
+use std::net::TcpStream;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 /// Defines the TPM connection information flags
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,280 +163,153 @@ pub trait TpmDevice {
     fn get_tpm_info(&self) -> u32;
 }
 
-// /// TPM device implementation for TCP connection (simulator)
-// pub struct TpmTcpDevice {
-//     host_name: String,
-//     port: u16,
-//     command_socket: Option<TcpStream>,
-//     signal_socket: Option<TcpStream>,
-//     locality: u8,
-//     tpm_info: u32,
-// }
+/// How a [`TbsContext`] closes the handle it owns.
+///
+/// The close is reached through a function pointer rather than called directly so that the unit
+/// tests, which wrap handles TBS has never issued, can substitute a recorder for that one handle
+/// instead of compiling the close out of the whole build. Every context TBS did issue carries
+/// [`tbs_context_close`] and is therefore closed for real, in test builds as well as in
+/// production ones.
+#[cfg(target_os = "windows")]
+type TbsCloseFn = unsafe fn(*mut c_void) -> u32;
 
-// impl TpmTcpDevice {
-//     /// Create a new TpmTcpDevice
-//     pub fn new(host_name: String, port: u16) -> Self {
-//         TpmTcpDevice {
-//             host_name,
-//             port,
-//             command_socket: None,
-//             signal_socket: None,
-//             locality: 0,
-//             tpm_info: 0,
-//         }
-//     }
+/// Closes a TBS context. The default [`TbsCloseFn`] of every [`TbsContext`].
+///
+/// # Safety
+///
+/// `handle` must be a context returned by a successful `Tbsi_Context_Create` that has not been
+/// closed already.
+#[cfg(target_os = "windows")]
+unsafe fn tbs_context_close(handle: *mut c_void) -> u32 {
+    // SAFETY: forwarded from this function's own contract.
+    unsafe { Tbsip_Context_Close(handle) }
+}
 
-//     /// Set the target for the TCP connection
-//     pub fn set_target(&mut self, host_name: String, port: u16) {
-//         self.host_name = host_name;
-//         self.port = port;
-//         self.locality = 0;
-//     }
+/// A TBS (TPM Base Services) context handle together with its ownership.
+///
+/// Keeping the handle and the ownership flag in one type means the two cannot drift apart, and it
+/// gives the handle a [`Drop`] of its own: an owned context is closed as soon as the value holding
+/// it goes away, including on an early return or an unwind. A borrowed context is never closed.
+#[cfg(target_os = "windows")]
+struct TbsContext {
+    handle: *mut c_void,
+    owned: bool,
+    /// Applied to `handle` on drop when `owned`. Both constructors set the real TBS close; only a
+    /// unit test, hand-building a context over a handle of its own, substitutes anything else.
+    close: TbsCloseFn,
+}
 
-//     /// Connect to the specified host and port
-//     pub fn connect_to(&mut self, host_name: String, port: u16) -> Result<bool, TpmError> {
-//         self.set_target(host_name, port);
-//         self.connect()
-//     }
+#[cfg(target_os = "windows")]
+impl TbsContext {
+    /// Opens a new TBS context. The returned value owns it and closes it on drop.
+    fn create() -> Result<Self, TpmError> {
+        let mut params = TBS_CONTEXT_PARAMS2 {
+            version: TBS_CONTEXT_VERSION_TWO,
+            ..Default::default()
+        };
+        params.Anonymous.Anonymous._bitfield = 4;
+        params.Anonymous.asUINT32 = 4;
 
-//     // Helper function to send an integer in network byte order
-//     fn send_int(socket: &mut TcpStream, value: u32) -> Result<(), TpmError> {
-//         let value_bytes = value.to_be_bytes();
-//         socket
-//             .write_all(&value_bytes)
-//             .map_err(|e| TpmError::IoError(e.to_string()))
-//     }
+        let mut handle: *mut c_void = ptr::null_mut();
+        // SAFETY: `params` is a fully initialized TBS_CONTEXT_PARAMS2 whose `version` field marks
+        // it as the version-two layout TBS expects behind the TBS_CONTEXT_PARAMS pointer, and
+        // `handle` is a live local that TBS only writes to. Both pointers outlive the call.
+        let res = unsafe {
+            Tbsi_Context_Create(
+                &params as *const TBS_CONTEXT_PARAMS2 as *const TBS_CONTEXT_PARAMS,
+                &mut handle,
+            )
+        };
 
-//     // Helper function to receive an integer in network byte order
-//     fn receive_int(socket: &mut TcpStream) -> Result<u32, TpmError> {
-//         let mut buffer = [0u8; 4];
-//         socket
-//             .read_exact(&mut buffer)
-//             .map_err(|e| TpmError::IoError(e.to_string()))?;
-//         Ok(u32::from_be_bytes(buffer))
-//     }
+        if res != TBS_SUCCESS {
+            return Err(TpmError::TbsError(format!(
+                "Failed to connect to TBS: {:?}",
+                res
+            )));
+        }
+        if handle.is_null() {
+            return Err(TpmError::TbsError(
+                "TBS reported success but returned no context".to_string(),
+            ));
+        }
 
-//     // Helper function to get acknowledgement from server
-//     fn get_ack(socket: &mut TcpStream) -> Result<(), TpmError> {
-//         let end_tag = Self::receive_int(socket)?;
+        Ok(Self {
+            handle,
+            owned: true,
+            close: tbs_context_close,
+        })
+    }
 
-//         if end_tag != 0 {
-//             if end_tag == 1 {
-//                 return Err(TpmError::CommandFailed);
-//             } else {
-//                 return Err(TpmError::BadEndTag);
-//             }
-//         }
+    /// Wraps a context owned by the caller. The returned value never closes it.
+    ///
+    /// # Safety
+    ///
+    /// `handle` must be a valid TBS context that outlives the returned value.
+    unsafe fn borrowed(handle: *mut c_void) -> Result<Self, TpmError> {
+        if handle.is_null() {
+            return Err(TpmError::InvalidParameter);
+        }
 
-//         Ok(())
-//     }
+        Ok(Self {
+            handle,
+            owned: false,
+            close: tbs_context_close,
+        })
+    }
 
-//     // Helper function to send a command and get acknowledgement
-//     fn send_cmd_and_get_ack(socket: &mut TcpStream, cmd: TcpTpmCommand) -> Result<(), TpmError> {
-//         Self::send_int(socket, cmd as u32)?;
-//         Self::get_ack(socket)
-//     }
+    fn handle(&self) -> *mut c_void {
+        self.handle
+    }
+}
 
-//     // Helper function to receive a variable-length array
-//     fn recv_var_array(socket: &mut TcpStream) -> Result<Vec<u8>, TpmError> {
-//         let len = Self::receive_int(socket)? as usize;
-//         let mut buffer = vec![0u8; len];
+#[cfg(target_os = "windows")]
+impl Drop for TbsContext {
+    fn drop(&mut self) {
+        if !self.owned {
+            return;
+        }
 
-//         socket
-//             .read_exact(&mut buffer)
-//             .map_err(|e| TpmError::IoError(e.to_string()))?;
+        // SAFETY: `handle` came from a successful `Tbsi_Context_Create` in `create`, the only
+        // constructor that sets `owned` on a context carrying the real close; a context carrying
+        // any other close came from a unit test that built it over a handle of its own.
+        // `TbsContext` is neither `Clone` nor `Copy`, so this is the only value holding that
+        // handle, and `Drop` runs at most once - meeting the TBS requirement of exactly one close
+        // per created context.
+        unsafe {
+            (self.close)(self.handle);
+        }
+    }
+}
 
-//         Ok(buffer)
-//     }
-// }
+/// The [`TbsCloseFn`] the unit tests substitute for handles TBS has never issued: it records the
+/// close and touches nothing.
+#[cfg(all(test, target_os = "windows"))]
+mod tbs_close_log {
+    use std::cell::Cell;
+    use std::os::raw::c_void;
 
-// impl TpmDevice for TpmTcpDevice {
-//     fn connect(&mut self) -> Result<bool, TpmError> {
-//         // Close any existing connections
-//         self.close();
+    thread_local! {
+        static CLOSES: Cell<usize> = const { Cell::new(0) };
+    }
 
-//         // Connect to the signal port first
-//         let signal_addr = format!("{}:{}", self.host_name, self.port + 1);
-//         let signal_socket = TcpStream::connect(signal_addr)
-//             .map_err(|e| TpmError::IoError(format!("Failed to connect to signal port: {}", e)))?;
+    /// # Safety
+    ///
+    /// None: `handle` is never dereferenced, and no TBS call is made. The signature exists only
+    /// to match [`super::TbsCloseFn`].
+    pub(super) unsafe fn record_close(_handle: *mut c_void) -> u32 {
+        CLOSES.with(|closes| closes.set(closes.get() + 1));
+        super::TBS_SUCCESS
+    }
 
-//         // Connect to the command port
-//         let command_addr = format!("{}:{}", self.host_name, self.port);
-//         let command_socket = TcpStream::connect(command_addr)
-//             .map_err(|e| TpmError::IoError(format!("Failed to connect to command port: {}", e)))?;
-
-//         // Set read and write timeouts
-//         command_socket
-//             .set_read_timeout(Some(Duration::from_secs(5)))
-//             .map_err(|e| TpmError::IoError(e.to_string()))?;
-//         signal_socket
-//             .set_read_timeout(Some(Duration::from_secs(5)))
-//             .map_err(|e| TpmError::IoError(e.to_string()))?;
-
-//         // Store the sockets
-//         self.command_socket = Some(command_socket);
-//         self.signal_socket = Some(signal_socket);
-
-//         // Make sure the TPM protocol is running
-//         if let Some(mut cmd_socket) = self.command_socket.as_ref().map(|s| s.try_clone().unwrap()) {
-//             // Client version is 1
-//             const CLIENT_VERSION: u32 = 1;
-
-//             Self::send_int(&mut cmd_socket, TcpTpmCommand::RemoteHandshake as u32)?;
-//             Self::send_int(&mut cmd_socket, CLIENT_VERSION)?;
-
-//             let endpoint_ver = Self::receive_int(&mut cmd_socket)?;
-//             if endpoint_ver != CLIENT_VERSION {
-//                 return Err(TpmError::IncompatibleTpm);
-//             }
-
-//             // Get the endpoint TPM properties
-//             self.tpm_info = Self::receive_int(&mut cmd_socket)?;
-
-//             Self::get_ack(&mut cmd_socket)?;
-
-//             Ok(true)
-//         } else {
-//             Err(TpmError::NotConnected)
-//         }
-//     }
-
-//     fn close(&mut self) {
-//         // Close command socket if open
-//         if let Some(_) = self.command_socket.take() {
-//             // Socket will be closed when dropped
-//         }
-
-//         // Close signal socket if open
-//         if let Some(_) = self.signal_socket.take() {
-//             // Socket will be closed when dropped
-//         }
-//     }
-
-//     fn dispatch_command(&mut self, cmd_buf: &[u8]) -> Result<(), TpmError> {
-//         if let Some(mut socket) = self.command_socket.as_ref().map(|s| s.try_clone().unwrap()) {
-//             // Send the command header
-//             Self::send_int(&mut socket, TcpTpmCommand::SendCommand as u32)?;
-//             socket
-//                 .write_all(&[self.locality])
-//                 .map_err(|e| TpmError::IoError(e.to_string()))?;
-//             Self::send_int(&mut socket, cmd_buf.len() as u32)?;
-
-//             // Send the command data
-//             socket
-//                 .write_all(cmd_buf)
-//                 .map_err(|e| TpmError::IoError(e.to_string()))?;
-
-//             Ok(())
-//         } else {
-//             Err(TpmError::NotConnected)
-//         }
-//     }
-
-//     fn get_response(&mut self) -> Result<Vec<u8>, TpmError> {
-//         if let Some(mut socket) = self.command_socket.as_ref().map(|s| s.try_clone().unwrap()) {
-//             // Get the response
-//             let resp = Self::recv_var_array(&mut socket)?;
-
-//             // Get the terminating ACK
-//             let ack = Self::receive_int(&mut socket)?;
-//             if ack != 0 {
-//                 return Err(TpmError::BadEndTag);
-//             }
-
-//             Ok(resp)
-//         } else {
-//             Err(TpmError::NotConnected)
-//         }
-//     }
-
-//     fn response_is_ready(&self) -> Result<bool, TpmError> {
-//         if let Some(socket) = &self.command_socket {
-//             // Create a read set with just this socket
-//             let mut read_set = [socket
-//                 .try_clone()
-//                 .map_err(|e| TpmError::IoError(e.to_string()))?];
-
-//             // Check if there's data to read with a zero timeout
-//             match socket::select(
-//                 &mut read_set,
-//                 &mut [],
-//                 &mut [],
-//                 Some(&Duration::from_secs(0)),
-//             ) {
-//                 Ok(1) => Ok(true),
-//                 Ok(_) => Ok(false),
-//                 Err(e) => Err(TpmError::IoError(e.to_string())),
-//             }
-//         } else {
-//             Err(TpmError::NotConnected)
-//         }
-//     }
-
-//     fn power_ctl(&mut self, on: bool) -> Result<(), TpmError> {
-//         if let Some(mut socket) = self.signal_socket.as_ref().map(|s| s.try_clone().unwrap()) {
-//             let power_cmd = if on {
-//                 TcpTpmCommand::SignalPowerOn
-//             } else {
-//                 TcpTpmCommand::SignalPowerOff
-//             };
-
-//             let nv_cmd = if on {
-//                 TcpTpmCommand::SignalNvOn
-//             } else {
-//                 TcpTpmCommand::SignalNvOff
-//             };
-
-//             Self::send_cmd_and_get_ack(&mut socket, power_cmd)?;
-//             Self::send_cmd_and_get_ack(&mut socket, nv_cmd)?;
-
-//             Ok(())
-//         } else {
-//             Err(TpmError::NotConnected)
-//         }
-//     }
-
-//     fn assert_physical_presence(&mut self, on: bool) -> Result<(), TpmError> {
-//         if let Some(mut socket) = self.signal_socket.as_ref().map(|s| s.try_clone().unwrap()) {
-//             let pp_cmd = if on {
-//                 TcpTpmCommand::SignalPPOn
-//             } else {
-//                 TcpTpmCommand::SignalPPOff
-//             };
-
-//             Self::send_cmd_and_get_ack(&mut socket, pp_cmd)
-//         } else {
-//             Err(TpmError::NotConnected)
-//         }
-//     }
-
-//     fn set_locality(&mut self, locality: u32) -> Result<(), TpmError> {
-//         if locality > 255 {
-//             return Err(TpmError::InvalidParameter);
-//         }
-
-//         self.locality = locality as u8;
-//         Ok(())
-//     }
-
-//     fn platform_available(&self) -> bool {
-//         self.has_flag(TpmConnInfo::TpmPlatformAvailable as u32)
-//     }
-
-//     fn has_flag(&self, flag: u32) -> bool {
-//         (self.tpm_info & flag) != 0
-//     }
-
-//     fn get_tpm_info(&self) -> u32 {
-//         self.tpm_info
-//     }
-// }
+    pub(super) fn count() -> usize {
+        CLOSES.with(|closes| closes.get())
+    }
+}
 
 // Windows TBS (TPM Base Services) implementation
 #[cfg(target_os = "windows")]
 pub struct TpmTbsDevice {
-    context: *mut c_void,
-    owns_context: bool,
+    context: Option<TbsContext>,
     result_buffer: [u8; 4096],
     res_size: u32,
     tpm_info: u32,
@@ -446,8 +326,7 @@ impl Default for TpmTbsDevice {
 impl TpmTbsDevice {
     pub fn new() -> Self {
         TpmTbsDevice {
-            context: ptr::null_mut(),
-            owns_context: false,
+            context: None,
             result_buffer: [0; 4096],
             res_size: 0,
             tpm_info: 0,
@@ -456,21 +335,20 @@ impl TpmTbsDevice {
 
     /// Creates a TPM device that submits commands through a caller-owned TBS context.
     ///
-    /// The context is borrowed and will not be closed by [`TpmDevice::close`] or when the device
-    /// is dropped.
+    /// The context is borrowed: it is closed neither by [`TpmDevice::close`] nor when the device
+    /// is dropped. A context opened by [`TpmDevice::connect`], by contrast, is owned by the device
+    /// and is closed by either.
     ///
     /// # Safety
     ///
     /// `context` must be a valid TBS context and must remain valid until this device is closed or
     /// dropped. The caller must synchronize any other use of the context.
     pub unsafe fn from_borrowed_context(context: *mut c_void) -> Result<Self, TpmError> {
-        if context.is_null() {
-            return Err(TpmError::InvalidParameter);
-        }
+        // SAFETY: forwarded from this function's own contract.
+        let context = unsafe { TbsContext::borrowed(context) }?;
 
         Ok(Self {
-            context,
-            owns_context: false,
+            context: Some(context),
             result_buffer: [0; 4096],
             res_size: 0,
             tpm_info: TpmConnInfo::TpmTbsConn as u32,
@@ -481,35 +359,18 @@ impl TpmTbsDevice {
 #[cfg(target_os = "windows")]
 impl TpmDevice for TpmTbsDevice {
     fn connect(&mut self) -> Result<bool, TpmError> {
-        if !self.context.is_null() {
+        if self.context.is_some() {
             return Ok(true); // Already connected
         }
 
-        let mut params = TBS_CONTEXT_PARAMS2 {
-            version: TBS_CONTEXT_VERSION_TWO,
-            ..Default::default()
-        };
-        params.Anonymous.Anonymous._bitfield = 4;
-        params.Anonymous.asUINT32 = 4;
-
-        let context_ptr = &mut self.context as *mut *mut c_void;
-        let res = unsafe {
-            Tbsi_Context_Create(
-                &params as *const TBS_CONTEXT_PARAMS2 as *const TBS_CONTEXT_PARAMS,
-                context_ptr,
-            )
-        };
-
-        if res != TBS_SUCCESS {
-            return Err(TpmError::TbsError(format!(
-                "Failed to connect to TBS: {:?}",
-                res
-            )));
-        }
-        self.owns_context = true;
+        // Held locally until the device is known to be usable: every early return below drops it,
+        // which closes the context.
+        let context = TbsContext::create()?;
 
         // Get device info to check if TPM 2.0 is available
         let mut info = TPM_DEVICE_INFO::default();
+        // SAFETY: the size passed is the size of the very buffer being passed, `info` is live for
+        // the duration of the call, and TBS only writes to it.
         let res = unsafe {
             Tbsi_GetDeviceInfo(
                 std::mem::size_of::<TPM_DEVICE_INFO>() as u32,
@@ -518,14 +379,14 @@ impl TpmDevice for TpmTbsDevice {
         };
 
         if res != TBS_SUCCESS {
-            self.close();
             return Err(TpmError::TbsError("Failed to get device info".to_string()));
         } else if info.tpmVersion != TPM_VERSION_20 {
-            self.close();
             return Err(TpmError::TbsError(
                 "Platform does not contain a TPM 2.0".to_string(),
             ));
         }
+
+        self.context = Some(context);
 
         // Set appropriate flags
         self.tpm_info = TpmConnInfo::TpmTbsConn as u32;
@@ -534,27 +395,30 @@ impl TpmDevice for TpmTbsDevice {
     }
 
     fn close(&mut self) {
-        if self.owns_context && !self.context.is_null() {
-            unsafe { Tbsip_Context_Close(self.context) };
-        }
-        self.context = ptr::null_mut();
-        self.owns_context = false;
+        // Dropping the context closes it, but only if this device owns it.
+        self.context = None;
         self.res_size = 0;
         self.tpm_info = 0;
     }
 
     fn dispatch_command(&mut self, cmd_buf: &[u8]) -> Result<(), TpmError> {
-        if self.context.is_null() {
-            return Err(TpmError::NotConnected);
-        }
+        // Copied out so that the rest of the method can borrow `self` mutably.
+        let context = match &self.context {
+            Some(context) => context.handle(),
+            None => return Err(TpmError::NotConnected),
+        };
 
         // Reset result buffer size
         self.res_size = self.result_buffer.len() as u32;
 
         // Submit command to TBS
+        // SAFETY: `context` is a live TBS context (dropping the device or calling `close` clears
+        // `self.context`, so it cannot outlive its close). `result_buffer` and `res_size` are
+        // fields of `self`, borrowed mutably here and so not aliased, and `res_size` is set to the
+        // buffer's true length just above, which is what bounds what TBS writes.
         let res = unsafe {
             Tbsip_Submit_Command(
-                self.context,
+                context,
                 TBS_COMMAND_LOCALITY_ZERO,
                 TBS_COMMAND_PRIORITY_NORMAL,
                 cmd_buf,
@@ -578,14 +442,17 @@ impl TpmDevice for TpmTbsDevice {
             return Err(TpmError::NoResponse);
         }
 
-        let resp = self.result_buffer[0..self.res_size as usize].to_vec();
+        // TBS wrote this length, and it is bounded by the buffer length handed to it, but the
+        // clamp costs nothing and keeps a wrong length from panicking here.
+        let res_size = (self.res_size as usize).min(self.result_buffer.len());
+        let resp = self.result_buffer[0..res_size].to_vec();
         self.res_size = 0;
 
         Ok(resp)
     }
 
     fn response_is_ready(&self) -> Result<bool, TpmError> {
-        if self.context.is_null() {
+        if self.context.is_none() {
             return Err(TpmError::NotConnected);
         }
 
@@ -612,6 +479,39 @@ mod windows_tests {
 
     use super::*;
 
+    /// A pointer that is never dereferenced: the tests below only ever check whether it is
+    /// carried around and whether a close was attempted on it.
+    fn fake_context() -> *mut c_void {
+        NonNull::<c_void>::dangling().as_ptr()
+    }
+
+    fn owned_device(context: *mut c_void) -> TpmTbsDevice {
+        TpmTbsDevice {
+            context: Some(TbsContext {
+                handle: context,
+                owned: true,
+                // The handle above is not a TBS context, so it must not reach TBS. This is the
+                // only place that substitutes anything for the real close.
+                close: tbs_close_log::record_close,
+            }),
+            result_buffer: [0; 4096],
+            res_size: 0,
+            tpm_info: TpmConnInfo::TpmTbsConn as u32,
+        }
+    }
+
+    /// The substitution above is confined to contexts a test builds by hand: anything TBS itself
+    /// issued goes through a constructor, and a constructor always installs the real close.
+    #[test]
+    fn constructed_contexts_close_through_tbs() {
+        let context = unsafe { TbsContext::borrowed(fake_context()) }.unwrap();
+
+        assert!(std::ptr::fn_addr_eq(
+            context.close,
+            tbs_context_close as TbsCloseFn
+        ));
+    }
+
     #[test]
     fn borrowed_context_rejects_null() {
         let result = unsafe { TpmTbsDevice::from_borrowed_context(ptr::null_mut()) };
@@ -620,11 +520,74 @@ mod windows_tests {
 
     #[test]
     fn borrowed_context_is_not_owned() {
-        let context = NonNull::<c_void>::dangling().as_ptr();
+        let context = fake_context();
         let device = unsafe { TpmTbsDevice::from_borrowed_context(context) }.unwrap();
 
-        assert_eq!(device.context, context);
-        assert!(!device.owns_context);
+        let held = device.context.as_ref().unwrap();
+        assert_eq!(held.handle(), context);
+        assert!(!held.owned);
+    }
+
+    #[test]
+    fn borrowed_context_is_not_closed_on_drop() {
+        let closes = tbs_close_log::count();
+
+        let device = unsafe { TpmTbsDevice::from_borrowed_context(fake_context()) }.unwrap();
+        drop(device);
+
+        assert_eq!(tbs_close_log::count(), closes);
+    }
+
+    #[test]
+    fn borrowed_context_is_not_closed_by_close() {
+        let closes = tbs_close_log::count();
+
+        let mut device = unsafe { TpmTbsDevice::from_borrowed_context(fake_context()) }.unwrap();
+        device.close();
+
+        assert_eq!(tbs_close_log::count(), closes);
+        assert!(device.context.is_none());
+        assert_eq!(device.get_tpm_info(), 0);
+    }
+
+    #[test]
+    fn owned_context_is_closed_on_drop() {
+        let closes = tbs_close_log::count();
+
+        let device = owned_device(fake_context());
+        drop(device);
+
+        assert_eq!(tbs_close_log::count(), closes + 1);
+    }
+
+    #[test]
+    fn owned_context_is_closed_by_close() {
+        let closes = tbs_close_log::count();
+
+        let mut device = owned_device(fake_context());
+        device.close();
+
+        assert_eq!(tbs_close_log::count(), closes + 1);
+        assert!(device.context.is_none());
+        assert_eq!(device.get_tpm_info(), 0);
+
+        // Dropping the already-closed device must not close a second time.
+        drop(device);
+        assert_eq!(tbs_close_log::count(), closes + 1);
+    }
+
+    #[test]
+    fn disconnected_device_rejects_commands() {
+        let mut device = TpmTbsDevice::new();
+
+        assert!(matches!(
+            device.dispatch_command(&[0u8; 12]),
+            Err(TpmError::NotConnected)
+        ));
+        assert!(matches!(
+            device.response_is_ready(),
+            Err(TpmError::NotConnected)
+        ));
     }
 }
 
@@ -634,6 +597,28 @@ pub struct TpmTbsDevice {
     dev_tpm: Option<File>,
     socket: Option<TcpStream>,
     tpm_info: u32,
+}
+
+/// Upper bound on the size of a response frame accepted from a socket peer.
+///
+/// The length prefix of a socket response is attacker-controlled, so it is checked against this
+/// bound before it is used to size an allocation. The value is the reference implementation's
+/// `MAX_RESPONSE_SIZE`, which is also the fixed buffer the `/dev/tpm*` path reads into.
+#[cfg(target_os = "linux")]
+const MAX_SOCKET_RESPONSE_SIZE: usize =
+    crate::tpm_types::Implementation::MAX_RESPONSE_SIZE.0 as usize;
+
+/// How long a single socket read or write may block before it is failed.
+///
+/// Without this a wedged peer holds the calling thread forever.
+#[cfg(target_os = "linux")]
+const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[cfg(target_os = "linux")]
+impl Default for TpmTbsDevice {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -662,8 +647,14 @@ impl TpmTbsDevice {
         }
 
         // Connect to user mode TRM
-        let mut socket = TcpStream::connect("127.0.0.1:2323")
+        let socket = TcpStream::connect("127.0.0.1:2323")
             .map_err(|e| TpmError::IoError(format!("Failed to connect to user TRM: {}", e)))?;
+        socket
+            .set_read_timeout(Some(SOCKET_TIMEOUT))
+            .map_err(|e| TpmError::IoError(format!("Failed to set read timeout: {}", e)))?;
+        socket
+            .set_write_timeout(Some(SOCKET_TIMEOUT))
+            .map_err(|e| TpmError::IoError(format!("Failed to set write timeout: {}", e)))?;
 
         // No handshake needed with user mode TRM
 
@@ -684,41 +675,38 @@ impl TpmTbsDevice {
 #[cfg(target_os = "linux")]
 impl TpmDevice for TpmTbsDevice {
     fn connect(&mut self) -> Result<bool, TpmError> {
-        if self.tpm_info != 0 {
+        // Connectedness is the presence of the handle commands travel over, which is the same
+        // test the Windows implementation makes on its TBS context. `tpm_info` describes a
+        // connection; it is not the connection itself.
+        if self.dev_tpm.is_some() || self.socket.is_some() {
             return Ok(true); // Already connected
         }
 
         // Try to open the direct TPM device
-        match OpenOptions::new().read(true).write(true).open("/dev/tpm0") {
-            Ok(file) => {
-                self.dev_tpm = Some(file);
-                self.tpm_info = TpmConnInfo::TpmTbsConn as u32
-                    | TpmConnInfo::TpmNoPowerCtl as u32
-                    | TpmConnInfo::TpmNoLocalityCtl as u32;
-                return Ok(true);
-            }
-            Err(_) => {
-                // Try TPM resource manager
-                match OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open("/dev/tpmrm0")
-                {
-                    Ok(file) => {
-                        self.dev_tpm = Some(file);
-                        self.tpm_info = TpmConnInfo::TpmTbsConn as u32
-                            | TpmConnInfo::TpmUsesTrm as u32
-                            | TpmConnInfo::TpmNoPowerCtl as u32
-                            | TpmConnInfo::TpmNoLocalityCtl as u32;
-                        return Ok(true);
-                    }
-                    Err(_) => {
-                        // Try user mode TRM
-                        return self.connect_to_linux_user_mode_trm();
-                    }
-                }
-            }
+        if let Ok(file) = OpenOptions::new().read(true).write(true).open("/dev/tpm0") {
+            self.dev_tpm = Some(file);
+            self.tpm_info = TpmConnInfo::TpmTbsConn as u32
+                | TpmConnInfo::TpmNoPowerCtl as u32
+                | TpmConnInfo::TpmNoLocalityCtl as u32;
+            return Ok(true);
         }
+
+        // Try TPM resource manager
+        if let Ok(file) = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/tpmrm0")
+        {
+            self.dev_tpm = Some(file);
+            self.tpm_info = TpmConnInfo::TpmTbsConn as u32
+                | TpmConnInfo::TpmUsesTrm as u32
+                | TpmConnInfo::TpmNoPowerCtl as u32
+                | TpmConnInfo::TpmNoLocalityCtl as u32;
+            return Ok(true);
+        }
+
+        // Try user mode TRM
+        self.connect_to_linux_user_mode_trm()
     }
 
     fn close(&mut self) {
@@ -785,6 +773,14 @@ impl TpmDevice for TpmTbsDevice {
                     .read_exact(&mut len_buf)
                     .map_err(|e| TpmError::IoError(e.to_string()))?;
                 let len = u32::from_be_bytes(len_buf) as usize;
+
+                // The peer chooses this length, so refuse to allocate on its word alone.
+                if len > MAX_SOCKET_RESPONSE_SIZE {
+                    return Err(TpmError::IoError(format!(
+                        "TPM response of {} bytes exceeds the {} byte maximum",
+                        len, MAX_SOCKET_RESPONSE_SIZE
+                    )));
+                }
 
                 // Read the response data
                 let mut resp = vec![0u8; len];
@@ -853,173 +849,62 @@ impl TpmDevice for TpmTbsDevice {
     }
 }
 
-// /// Socket utility module
-// mod socket {
-//     use std::io;
-//     use std::net::TcpStream;
-//     use std::time::Duration;
+// Placeholder implementation for platforms with no system TPM interface of their own.
+//
+// Windows reaches its TPM through TBS and Linux through `/dev/tpm*` or a user-mode resource
+// manager; nothing equivalent is implemented for macOS or the BSDs. Rather than leave the crate
+// without a `TpmTbsDevice` there - which fails to build with an error that points at the wrong
+// place - the type exists everywhere and reports the platform as unsupported at run time. Callers
+// on such a platform can still drive a TPM by passing their own [`TpmDevice`] to `Tpm2::new`.
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+pub struct TpmTbsDevice;
 
-//     #[cfg(unix)]
-//     pub fn select(
-//         read: &mut [TcpStream],
-//         write: &mut [TcpStream],
-//         except: &mut [TcpStream],
-//         timeout: Option<&Duration>,
-//     ) -> io::Result<usize> {
-//         use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
-//         use std::os::unix::io::AsRawFd;
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+impl Default for TpmTbsDevice {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-//         unsafe {
-//             let mut read_fds: fd_set = std::mem::zeroed();
-//             let mut write_fds: fd_set = std::mem::zeroed();
-//             let mut except_fds: fd_set = std::mem::zeroed();
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+impl TpmTbsDevice {
+    pub fn new() -> Self {
+        TpmTbsDevice
+    }
 
-//             FD_ZERO(&mut read_fds);
-//             FD_ZERO(&mut write_fds);
-//             FD_ZERO(&mut except_fds);
+    fn unsupported<T>(operation: &str) -> Result<T, TpmError> {
+        Err(TpmError::NotSupported(format!(
+            "{}: this platform has no built-in TPM device; supply a TpmDevice implementation",
+            operation
+        )))
+    }
+}
 
-//             let mut max_fd = 0;
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+impl TpmDevice for TpmTbsDevice {
+    fn connect(&mut self) -> Result<bool, TpmError> {
+        Self::unsupported("connect")
+    }
 
-//             for stream in read.iter() {
-//                 let fd = stream.as_raw_fd();
-//                 FD_SET(fd, &mut read_fds);
-//                 max_fd = std::cmp::max(max_fd, fd);
-//             }
+    fn close(&mut self) {}
 
-//             for stream in write.iter() {
-//                 let fd = stream.as_raw_fd();
-//                 FD_SET(fd, &mut write_fds);
-//                 max_fd = std::cmp::max(max_fd, fd);
-//             }
+    fn dispatch_command(&mut self, _cmd_buf: &[u8]) -> Result<(), TpmError> {
+        Self::unsupported("dispatch_command")
+    }
 
-//             for stream in except.iter() {
-//                 let fd = stream.as_raw_fd();
-//                 FD_SET(fd, &mut except_fds);
-//                 max_fd = std::cmp::max(max_fd, fd);
-//             }
+    fn get_response(&mut self) -> Result<Vec<u8>, TpmError> {
+        Self::unsupported("get_response")
+    }
 
-//             let mut tv: timeval = std::mem::zeroed();
-//             let tv_ptr = if let Some(timeout) = timeout {
-//                 tv.tv_sec = timeout.as_secs() as _;
-//                 tv.tv_usec = (timeout.subsec_micros()) as _;
-//                 &mut tv as *mut timeval
-//             } else {
-//                 std::ptr::null_mut()
-//             };
+    fn response_is_ready(&self) -> Result<bool, TpmError> {
+        Self::unsupported("response_is_ready")
+    }
 
-//             let result = select(
-//                 max_fd + 1,
-//                 &mut read_fds,
-//                 &mut write_fds,
-//                 &mut except_fds,
-//                 tv_ptr,
-//             );
+    fn has_flag(&self, _flag: u32) -> bool {
+        false
+    }
 
-//             if result < 0 {
-//                 return Err(io::Error::last_os_error());
-//             }
-
-//             // Count how many are ready
-//             let mut ready_count = 0;
-
-//             for stream in read.iter() {
-//                 if FD_ISSET(stream.as_raw_fd(), &read_fds) {
-//                     ready_count += 1;
-//                 }
-//             }
-
-//             for stream in write.iter() {
-//                 if FD_ISSET(stream.as_raw_fd(), &write_fds) {
-//                     ready_count += 1;
-//                 }
-//             }
-
-//             for stream in except.iter() {
-//                 if FD_ISSET(stream.as_raw_fd(), &except_fds) {
-//                     ready_count += 1;
-//                 }
-//             }
-
-//             Ok(ready_count)
-//         }
-//     }
-
-//     #[cfg(windows)]
-//     pub fn select(
-//         read: &mut [TcpStream],
-//         write: &mut [TcpStream],
-//         except: &mut [TcpStream],
-//         timeout: Option<&Duration>,
-//     ) -> io::Result<usize> {
-//         use std::os::windows::io::AsRawSocket;
-//         use windows::Win32::Networking::WinSock::{
-//             fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO,
-//         };
-
-//         unsafe {
-//             let mut read_fds: fd_set = std::mem::zeroed();
-//             let mut write_fds: fd_set = std::mem::zeroed();
-//             let mut except_fds: fd_set = std::mem::zeroed();
-
-//             FD_ZERO(&mut read_fds);
-//             FD_ZERO(&mut write_fds);
-//             FD_ZERO(&mut except_fds);
-
-//             for stream in read.iter() {
-//                 FD_SET(stream.as_raw_socket(), &mut read_fds);
-//             }
-
-//             for stream in write.iter() {
-//                 FD_SET(stream.as_raw_socket(), &mut write_fds);
-//             }
-
-//             for stream in except.iter() {
-//                 FD_SET(stream.as_raw_socket(), &mut except_fds);
-//             }
-
-//             let mut tv: timeval = std::mem::zeroed();
-//             let tv_ptr = if let Some(timeout) = timeout {
-//                 tv.tv_sec = timeout.as_secs() as i32;
-//                 tv.tv_usec = (timeout.subsec_micros()) as i32;
-//                 &mut tv as *mut timeval
-//             } else {
-//                 std::ptr::null_mut()
-//             };
-
-//             let result = select(
-//                 0, // ignored on Windows
-//                 &mut read_fds,
-//                 &mut write_fds,
-//                 &mut except_fds,
-//                 tv_ptr,
-//             );
-
-//             if result == -1 {
-//                 return Err(io::Error::last_os_error());
-//             }
-
-//             // Count how many are ready
-//             let mut ready_count = 0;
-
-//             for stream in read.iter() {
-//                 if FD_ISSET(stream.as_raw_socket(), &read_fds) {
-//                     ready_count += 1;
-//                 }
-//             }
-
-//             for stream in write.iter() {
-//                 if FD_ISSET(stream.as_raw_socket(), &write_fds) {
-//                     ready_count += 1;
-//                 }
-//             }
-
-//             for stream in except.iter() {
-//                 if FD_ISSET(stream.as_raw_socket(), &except_fds) {
-//                     ready_count += 1;
-//                 }
-//             }
-
-//             Ok(ready_count as usize)
-//         }
-//     }
-// }
+    fn get_tpm_info(&self) -> u32 {
+        0
+    }
+}

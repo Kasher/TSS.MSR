@@ -230,3 +230,96 @@ mod tests {
         Ok(())
     }
 }
+
+/// Pins the marshaling contract for a structure whose union field carries no value.
+///
+/// The generator emits an early `return Ok(())` for a structure whose union selector is its
+/// first marshaled field, so an absent union used to serialize to an empty buffer instead of
+/// being reported. That is a deliberate exception for `TPMT_SENSITIVE` only: `TPM2_LoadExternal`
+/// loads a public area alone by sending a zero-size `inPrivate`. Every other structure must
+/// report `TpmError::InvalidUnion` rather than emit a silently truncated encoding.
+#[cfg(test)]
+mod absent_union_marshaling {
+    use super::*;
+
+    /// Serializing a default-constructed `$t` must fail with `InvalidUnion`.
+    macro_rules! assert_invalid_union {
+        ($t:ty) => {
+            match <$t>::default().toBytes() {
+                Err(TpmError::InvalidUnion) => {}
+                other => panic!(
+                    "{} with an absent union marshaled as {:?}",
+                    stringify!($t),
+                    other
+                ),
+            }
+        };
+    }
+
+    #[test]
+    fn default_sensitive_is_the_one_exception_and_marshals_to_nothing() {
+        assert_eq!(
+            TPMT_SENSITIVE::default().toBytes().unwrap(),
+            Vec::<u8>::new()
+        );
+    }
+
+    /// Every other structure whose union selector is its first marshaled field.
+    #[test]
+    fn an_absent_leading_union_is_rejected() {
+        assert_invalid_union!(TPMS_CAPABILITY_DATA);
+        assert_invalid_union!(TPMT_KEYEDHASH_SCHEME);
+        assert_invalid_union!(TPMT_SIG_SCHEME);
+        assert_invalid_union!(TPMT_KDF_SCHEME);
+        assert_invalid_union!(TPMT_ASYM_SCHEME);
+        assert_invalid_union!(TPMT_RSA_SCHEME);
+        assert_invalid_union!(TPMT_RSA_DECRYPT);
+        assert_invalid_union!(TPMT_ECC_SCHEME);
+        assert_invalid_union!(TPMT_SIGNATURE);
+        assert_invalid_union!(TPMS_KEYEDHASH_PARMS);
+        assert_invalid_union!(TPMT_PUBLIC_PARMS);
+        assert_invalid_union!(TPMT_PUBLIC);
+        assert_invalid_union!(SignResponse);
+        assert_invalid_union!(TPM2_TestParms_REQUEST);
+    }
+
+    /// A union behind other fields never reached the early return, and is unaffected.
+    #[test]
+    fn an_absent_trailing_union_is_still_rejected() {
+        assert_invalid_union!(TPMS_ATTEST);
+    }
+
+    /// The exception is load bearing: a public-key-only `TPM2_LoadExternal` puts a zero-size
+    /// `inPrivate` sized object on the wire ahead of the public area.
+    #[test]
+    fn public_only_load_external_marshals_a_zero_size_in_private() -> Result<(), TpmError> {
+        let in_public = TPMT_PUBLIC {
+            nameAlg: TPM_ALG_ID::SHA256,
+            objectAttributes: TPMA_OBJECT(TPMA_OBJECT::sign.0 | TPMA_OBJECT::userWithAuth.0),
+            authPolicy: vec![],
+            parameters: Some(TPMU_PUBLIC_PARMS::rsaDetail(TPMS_RSA_PARMS {
+                symmetric: TPMT_SYM_DEF_OBJECT::default(),
+                scheme: Some(TPMU_ASYM_SCHEME::null(TPMS_NULL_ASYM_SCHEME::default())),
+                keyBits: 2048,
+                exponent: 0,
+            })),
+            unique: Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA {
+                buffer: vec![0xA5; 256],
+            })),
+        };
+
+        let request = TPM2_LoadExternal_REQUEST::new(
+            &TPMT_SENSITIVE::default(),
+            &in_public,
+            &TPM_HANDLE::new(TPM_RH::NULL.get_value()),
+        );
+        let bytes = request.toBytes()?;
+
+        assert_eq!(&bytes[..2], &[0u8, 0u8], "inPrivate must be a zero-size object");
+
+        let public_size = u16::from_be_bytes([bytes[2], bytes[3]]) as usize;
+        assert_eq!(public_size, in_public.toBytes()?.len());
+        assert_eq!(bytes.len(), 2 + 2 + public_size + 4);
+        Ok(())
+    }
+}

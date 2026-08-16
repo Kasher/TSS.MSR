@@ -561,7 +561,6 @@ dependencies = [
  "elliptic-curve",
  "hmac",
  "lazy_static",
- "libc",
  "p256",
  "p384",
  "p521",
@@ -570,6 +569,7 @@ dependencies = [
  "sha1",
  "sha2",
  "sm3",
+ "subtle",
  "windows",
  "zeroize",
 ]
