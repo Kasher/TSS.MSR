@@ -42,7 +42,6 @@ software-crypto = [
 cng-crypto = []
 
 [dependencies]
-derivative = "2.2.0"
 lazy_static = "1.5.0"
 # Constant-time comparison of authorization HMAC tags.
 subtle = "2.6"

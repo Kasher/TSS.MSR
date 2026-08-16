@@ -325,6 +325,14 @@ namespace CodeGen
             AddSnip(curType, snipLines);
         }
 
+        /// <summary> The snippet lines inserted into the given type's definition, or an empty
+        /// sequence if the type has no snippet. </summary>
+        /// <remarks> A generator needs to look at these when the code it emits elsewhere must
+        /// account for what the snippet declares. The Rust generator does: a struct's Default
+        /// implementation has to initialize the fields the snippet injects, too. </remarks>
+        protected IEnumerable<string> GetSnip(string typeName)
+            => Snips.TryGetValue(typeName, out var snip) ? snip : Enumerable.Empty<string>();
+
         protected void InsertSnip(string typeName)
         {
             // Insert the custom snippets if there are any

@@ -519,6 +519,16 @@ namespace CodeGen
                 return;
             }
 
+            // The members are collected before anything is written, because whether Default can be
+            // derived is decided in the derive list, above the members that decide it.
+            var members = CollectMembers(s);
+            var initializers = DefaultInitializers(members);
+
+            // A struct all of whose members start out as Default::default() just derives Default.
+            // The rest get the hand-emitted implementation below.
+            bool deriveDefault = !initializers.Any(i => i.InitVal != null);
+            string defaultDerive = deriveDefault ? ", Default" : "";
+
             WriteComment(s);
             if (StructsWithHandWrittenDebug.Contains(structName))
             {
@@ -526,20 +536,22 @@ namespace CodeGen
                 Write("/// Holds secret material, so `Debug` is deliberately not derived here. The redacting");
                 Write("/// implementation is hand-written in `src/tpm_type_extensions.rs`; omitting it is a compile");
                 Write("/// error, enforced by the assertion at the end of this file.");
-                Write($"#[derive(Clone, Derivative)]");
+                Write($"#[derive(Clone{defaultDerive})]");
             }
             else
             {
-                Write($"#[derive(Debug, Clone, Derivative)]");
+                Write($"#[derive(Debug, Clone{defaultDerive})]");
             }
-            Write("#[derivative(Default)]");
             Write($"pub struct {structName} {{");
             TabIn();
 
-            GenFields(s);
+            GenFields(members);
 
             TabOut("}");
             Write("");
+
+            if (!deriveDefault)
+                GenDefaultImpl(structName, initializers);
 
             // Implement struct methods
             TabIn($"impl {structName} {{");
@@ -611,35 +623,128 @@ namespace CodeGen
         }
 
         // Generates the struct's fields, supporting "derived" structs by containing the same fields
-        void GenFields(TpmStruct s) {
+        void GenFields(List<StructMember> members) {
+            foreach (var m in members)
+            {
+                if (m.SnipType != null)
+                {
+                    InsertSnip(m.SnipType);
+                    continue;
+                }
+
+                WriteComment(m.Field);
+                if (m.IsUnionSelector)
+                {
+                    // Selectors are handled through methods in Rust
+                    continue;
+                }
+
+                Write($"pub {ToRustName(m.Field.Name)}: {TransType(m.Field)},");
+            }
+        }
+
+        // One item of a generated struct's body: either an AST field (possibly a union selector,
+        // for which only the comment is emitted), or the point at which a snips block is inserted.
+        // The struct declaration and its Default implementation are both driven off this one list,
+        // so the two cannot drift apart.
+        class StructMember
+        {
+            internal StructField Field;
+            internal bool IsUnionSelector;
+            // The expression this member's default value is; null means Default::default()
+            internal string InitVal;
+            internal string SnipType;
+        }
+
+        // Collects the struct's members, supporting "derived" structs by containing the same fields
+        static List<StructMember> CollectMembers(TpmStruct s)
+        {
+            var members = new List<StructMember>();
+            CollectMembers(s, members);
+            return members;
+        }
+
+        static void CollectMembers(TpmStruct s, List<StructMember> members)
+        {
             var fieldsToInit = s.NonDefaultInitFields.Select(f => f.Name).ToHashSet();
 
             if (s.DerivedFrom != null) {
-                GenFields(s.DerivedFrom);
+                CollectMembers(s.DerivedFrom, members);
             }
 
-            // Fields
             foreach (var f in s.NonSizeFields)
             {
                 if (f.MarshalType == MarshalType.ConstantValue)
                     // No member field for a constant tag
                     continue;
 
-                WriteComment(f);
-                if (f.MarshalType == MarshalType.UnionSelector)
-                {
-                    // Selectors are handled through methods in Rust
-                    continue;
-                }
-
-                if (fieldsToInit.Contains(f.Name))
-                {
-                    Write($"#[derivative(Default(value=\"{f.GetInitVal()}\"))]");
-                }
-                Write($"pub {ToRustName(f.Name)}: {TransType(f)},");
+                bool isUnionSelector = f.MarshalType == MarshalType.UnionSelector;
+                members.Add(new StructMember {
+                    Field = f,
+                    IsUnionSelector = isUnionSelector,
+                    InitVal = !isUnionSelector && fieldsToInit.Contains(f.Name)
+                                    ? CustomInitVal(f) : null
+                });
             }
 
-            InsertSnip(s.Name);
+            members.Add(new StructMember { SnipType = s.Name });
+        }
+
+        // The field's initial value if it differs from the field type's own default, else null.
+        //
+        // The AST asks for a TPM_HANDLE field to start out as TPM_HANDLE::default(), which is what
+        // Default::default() produces for it anyway. Reporting no value for such a field lets its
+        // struct derive Default instead of spelling out an implementation that says nothing.
+        static string CustomInitVal(StructField f)
+        {
+            string initVal = f.GetInitVal();
+            return initVal == $"{TransType(f)}::default()" ? null : initVal;
+        }
+
+        // Matches a field declaration in a snips block. Such fields are absent from the AST, but
+        // present in the generated struct, so its Default implementation has to initialize them.
+        static readonly Regex SnipFieldRegex = new Regex(@"^\s*pub\s+(?<name>[A-Za-z_]\w*)\s*:");
+
+        // The name and default value expression of every field the generated struct declares,
+        // in declaration order.
+        List<(string Name, string InitVal)> DefaultInitializers(List<StructMember> members)
+        {
+            var initializers = new List<(string, string)>();
+            foreach (var m in members)
+            {
+                if (m.SnipType != null)
+                {
+                    foreach (var line in GetSnip(m.SnipType))
+                    {
+                        var match = SnipFieldRegex.Match(line);
+                        if (match.Success)
+                            initializers.Add((match.Groups["name"].Value, null));
+                    }
+                }
+                else if (!m.IsUnionSelector)
+                {
+                    initializers.Add((ToRustName(m.Field.Name), m.InitVal));
+                }
+            }
+            return initializers;
+        }
+
+        // Emits the Default implementation of a struct at least one of whose fields does not start
+        // out as Default::default(). Every field is listed, not just those with a value of their
+        // own, so that a field added later cannot silently acquire a default nobody chose for it:
+        // it either appears here or the struct expression does not compile.
+        void GenDefaultImpl(string structName, List<(string Name, string InitVal)> initializers)
+        {
+            TabIn($"impl Default for {structName} {{");
+            TabIn("fn default() -> Self {");
+            TabIn("Self {");
+
+            foreach (var (name, initVal) in initializers)
+                Write($"{name}: {initVal ?? "Default::default()"},");
+
+            TabOut("}", false);
+            TabOut("}", false);
+            TabOut("}");
         }
 
         void GenTpmStructureImplementation(TpmStruct s)
