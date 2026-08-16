@@ -235,7 +235,7 @@ fn attestation(tpm: &mut Tpm2) -> Result<(), TpmError> {
     
     // Set up PCR selection for the quote
     let pcrs_to_quote = TPMS_PCR_SELECTION::get_selection_array(
-        TPM_ALG_ID::SHA1, 7 );
+        TPM_ALG_ID::SHA1, 7 )?;
 
     // Do an event to make sure the value is non-zero
     tpm.PCR_Event(&TPM_HANDLE::pcr(7), &vec![1, 2, 3])?;
@@ -487,7 +487,7 @@ fn pcr_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     println!("PCR 16 reset");
 
     // Read the PCR value (should be all zeros after reset)
-    let pcr_selection = TPMS_PCR_SELECTION::get_selection_array(TPM_ALG_ID::SHA256, 16);
+    let pcr_selection = TPMS_PCR_SELECTION::get_selection_array(TPM_ALG_ID::SHA256, 16)?;
     let pcr_vals = tpm.PCR_Read(&pcr_selection)?;
     println!("PCR 16 after reset: {:?}", pcr_vals.pcrValues);
 
@@ -1120,7 +1120,7 @@ fn unseal_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     tpm.PCR_Event(&TPM_HANDLE::pcr(pcr), &vec![1, 2, 3, 4])?;
 
     // Read the current PCR value
-    let pcr_selection = TPMS_PCR_SELECTION::get_selection_array(bank, pcr);
+    let pcr_selection = TPMS_PCR_SELECTION::get_selection_array(bank, pcr)?;
     let pcr_vals = tpm.PCR_Read(&pcr_selection)?;
     println!("PCR {} value: {:?}", pcr, pcr_vals.pcrValues);
 
@@ -1220,7 +1220,7 @@ fn policy_or_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     // Set PCR to a known value
     tpm.PCR_Event(&TPM_HANDLE::pcr(pcr), &vec![1, 2, 3, 4])?;
 
-    let pcr_selection = TPMS_PCR_SELECTION::get_selection_array(bank, pcr);
+    let pcr_selection = TPMS_PCR_SELECTION::get_selection_array(bank, pcr)?;
     let pcr_vals = tpm.PCR_Read(&pcr_selection)?;
 
     // Compute the PCR digest
@@ -1718,7 +1718,7 @@ fn policy_pcr_sample(tpm: &mut Tpm2) -> Result<(), TpmError> {
     // Set PCR to a known value
     tpm.PCR_Event(&TPM_HANDLE::pcr(pcr), &vec![1, 2, 3, 4])?;
 
-    let pcr_selection = TPMS_PCR_SELECTION::get_selection_array(bank, pcr);
+    let pcr_selection = TPMS_PCR_SELECTION::get_selection_array(bank, pcr)?;
     let pcr_vals = tpm.PCR_Read(&pcr_selection)?;
 
     // Compute the PCR digest

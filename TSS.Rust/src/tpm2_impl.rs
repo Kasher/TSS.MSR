@@ -1812,7 +1812,7 @@ impl Tpm2 {
                             let handle = resp.get_handle();
                             self.flush_orphaned_handle(&handle);
 
-                            return Err(TpmError::GenericError(format!(
+                            return Err(TpmError::VerificationFailed(format!(
                                 "{} returned an object Name that fails the consistency check \
                                  against its public area: {}",
                                 cmd_code, err
@@ -3490,7 +3490,7 @@ mod hardware_tests {
         let mut tpm = open_tpm();
         // `pcrSelect` is a bitmap and must be at least PCR_SELECT_MIN (3) bytes; a one-byte,
         // all-zero selection both undersizes the field and names no PCR at all.
-        let selection = TPMS_PCR_SELECTION::new_from_pcr_u32(TPM_ALG_ID::SHA256, 0);
+        let selection = TPMS_PCR_SELECTION::new_from_pcr_u32(TPM_ALG_ID::SHA256, 0).unwrap();
         let read = tpm.PCR_Read(&vec![selection.clone()]).unwrap();
 
         let tree = PolicyTree::new().add(PolicyPcr::new(read.pcrValues.clone(), vec![selection]));

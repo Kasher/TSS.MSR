@@ -333,10 +333,14 @@ impl TPMT_PUBLIC {
     /// caller can derive locally from the public area alone. Verifying it proves only that the
     /// public area in hand is the one the expected Name commits to. It proves nothing about
     /// where that public area came from, and nothing about the channel it arrived over.
+    ///
+    /// A mismatch is [`TpmError::VerificationFailed`], the variant every other check on
+    /// attacker-reachable data in this API uses, so a caller can tell an untrusted public area
+    /// from an operational failure without reading the message.
     pub fn verify_name(&self, expected: &[u8], crypto: &CryptoProvider) -> Result<(), TpmError> {
         let actual = self.get_name(crypto)?;
         if actual != expected {
-            return Err(TpmError::GenericError(
+            return Err(TpmError::VerificationFailed(
                 "TPMT_PUBLIC Name does not match the expected Name".to_string(),
             ));
         }
@@ -604,44 +608,94 @@ impl TPMT_PUBLIC {
 }
 
 impl TPMS_PCR_SELECTION {
+    /// The smallest `pcrSelect` a valid selection carries, whatever it names.
+    ///
+    /// `PCR_SELECT_MIN` in the TPM 2.0 specification: three bytes, enough for the 24 PCRs a
+    /// PC Client platform defines. A shorter selection is not a valid `TPMS_PCR_SELECTION`, so
+    /// every selection built here is at least this long even when it names PCR 0.
+    pub const MIN_PCR_SELECT_BYTES: usize = 3;
+
+    /// The longest `pcrSelect` this structure can carry on the wire.
+    ///
+    /// `TPMS_PCR_SELECTION` marshals `pcrSelect` with a **one-byte** size prefix — see
+    /// `buf.writeSizedByteBuf(&self.pcrSelect, 1)` in the generated `tpm_types.rs` — so a longer
+    /// selection cannot be expressed. `TpmBuffer::writeSizedByteBuf` fails the marshal rather
+    /// than truncating the length, so nothing is silently mis-sent, but a selection that cannot
+    /// be marshalled is of no use to anyone and there is no reason to build one.
+    pub const MAX_PCR_SELECT_BYTES: usize = u8::MAX as usize;
+
+    /// The largest PCR index any `TPMS_PCR_SELECTION` can name: 2039.
+    ///
+    /// It follows from [`Self::MAX_PCR_SELECT_BYTES`]: the last representable bit is bit 7 of
+    /// byte 254. Real TPMs implement far fewer PCRs — 24 on a PC Client platform — so this is a
+    /// bound on what the wire format can express, not a promise that any TPM has that many.
+    pub const MAX_PCR_INDEX: u32 = (Self::MAX_PCR_SELECT_BYTES as u32) * 8 - 1;
+
+    /// The `pcrSelect` byte holding `pcr`'s bit, or an error if no selection can hold it.
+    ///
+    /// Checked **before** anything is allocated. Sizing the array from an unchecked `pcr` lets
+    /// a caller that took the index from a configuration file or off the network ask for
+    /// `u32::MAX / 8 + 1` bytes — half a gigabyte — and be met with an allocation failure abort
+    /// rather than an error it can handle.
+    fn select_byte_index(pcr: u32) -> Result<usize, TpmError> {
+        if pcr > Self::MAX_PCR_INDEX {
+            return Err(TpmError::InvalidArraySize(format!(
+                "PCR {} needs a pcrSelect of {} bytes, but TPMS_PCR_SELECTION marshals \
+                 pcrSelect behind a one-byte size prefix, so it holds at most {} bytes and \
+                 PCR {} is the largest index it can name",
+                pcr,
+                pcr as usize / 8 + 1,
+                Self::MAX_PCR_SELECT_BYTES,
+                Self::MAX_PCR_INDEX
+            )));
+        }
+        Ok(pcr as usize / 8)
+    }
+
     /// Get a PCR-selection array naming exactly one PCR in one bank
-    pub fn get_selection_array(hash_alg: TPM_ALG_ID, pcr: u32) -> Vec<Self> {
-        vec![TPMS_PCR_SELECTION::new_from_pcr_u32(hash_alg, pcr)]
+    ///
+    /// Errors when `pcr` is above [`Self::MAX_PCR_INDEX`] — see [`Self::new_from_pcr_u32`].
+    pub fn get_selection_array(hash_alg: TPM_ALG_ID, pcr: u32) -> Result<Vec<Self>, TpmError> {
+        Ok(vec![TPMS_PCR_SELECTION::new_from_pcr_u32(hash_alg, pcr)?])
     }
 
     /// Create a TPMS_PCR_SELECTION naming a single-PCR
-    pub fn new_from_pcr_u32(hash_alg: TPM_ALG_ID, pcr: u32) -> Self {
-        let mut size = 3;
+    ///
+    /// `pcr` above [`Self::MAX_PCR_INDEX`] is an error: the selection it would need is longer
+    /// than the wire format can express, so building it would allocate a large buffer for a
+    /// value that could never be sent.
+    pub fn new_from_pcr_u32(hash_alg: TPM_ALG_ID, pcr: u32) -> Result<Self, TpmError> {
+        let byte_index = Self::select_byte_index(pcr)?;
 
-        // `pcr_bytes` is already the byte index that holds `pcr`'s bit, so the array must grow
-        // whenever that index does not fit in `size` bytes. Dividing it by 8 again here compared
-        // the wrong quantity and left `size` at 3 for every PCR up to 191, so selecting PCR 24
+        // `byte_index` is already the byte holding `pcr`'s bit, so the array must grow whenever
+        // that index does not fit in the minimum size. Dividing it by 8 again here compared the
+        // wrong quantity and left the size at 3 for every PCR up to 191, so selecting PCR 24
         // (the first PCR outside the standard 0-23 range) indexed past the end of the vector.
-        let pcr_bytes = pcr / 8;
-        if pcr_bytes + 1 > size {
-            size = pcr_bytes + 1;
-        }
+        let size = std::cmp::max(Self::MIN_PCR_SELECT_BYTES, byte_index + 1);
 
-        let mut pcr_select = vec![0; size as usize];
-        pcr_select[pcr_bytes as usize] = 1 << (pcr % 8);
+        let mut pcr_select = vec![0u8; size];
+        pcr_select[byte_index] = 1 << (pcr % 8);
 
-        TPMS_PCR_SELECTION::new(hash_alg, &pcr_select)
+        Ok(TPMS_PCR_SELECTION::new(hash_alg, &pcr_select))
     }
 
     /// Create a TPMS_PCR_SELECTION for a set of PCRs in a single bank
-    pub fn new_from_pcrs_vec(hash_alg: TPM_ALG_ID, pcrs: &[u32]) -> Self {
-        let mut pcr_max = *pcrs.iter().max().unwrap_or(&0);
-
-        if (pcr_max < 23) {
-            pcr_max = 23;
+    ///
+    /// Any PCR above [`Self::MAX_PCR_INDEX`] is an error, on the same grounds as
+    /// [`Self::new_from_pcr_u32`]. Every index is checked before the array is allocated, so a
+    /// single out-of-range entry cannot drive the allocation.
+    pub fn new_from_pcrs_vec(hash_alg: TPM_ALG_ID, pcrs: &[u32]) -> Result<Self, TpmError> {
+        let mut size = Self::MIN_PCR_SELECT_BYTES;
+        for pcr in pcrs {
+            size = std::cmp::max(size, Self::select_byte_index(*pcr)? + 1);
         }
 
-        let mut pcr_select = vec![0; (pcr_max / 8 + 1) as usize];
+        let mut pcr_select = vec![0u8; size];
         for pcr in pcrs {
             pcr_select[*pcr as usize / 8] |= 1 << (*pcr % 8);
         }
 
-        TPMS_PCR_SELECTION::new(hash_alg, &pcr_select)
+        Ok(TPMS_PCR_SELECTION::new(hash_alg, &pcr_select))
     }
 }
 
@@ -650,45 +704,173 @@ mod pcr_selection_tests {
     use super::*;
 
     #[test]
-    fn pcr_selection_is_unchanged_for_the_standard_pcr_range() {
+    fn pcr_selection_is_unchanged_for_the_standard_pcr_range() -> Result<(), TpmError> {
         // PCRs 0-23 are the standard TPM range and must keep producing the historical 3-byte
         // wire format: it is part of every existing PCR policy, so any change here would
         // silently break policy digests computed against the old layout.
         for pcr in 0..24u32 {
-            let selection = TPMS_PCR_SELECTION::new_from_pcr_u32(TPM_ALG_ID::SHA256, pcr);
+            let selection = TPMS_PCR_SELECTION::new_from_pcr_u32(TPM_ALG_ID::SHA256, pcr)?;
             assert_eq!(selection.pcrSelect.len(), 3);
 
             let mut expected = vec![0u8; 3];
             expected[(pcr / 8) as usize] = 1 << (pcr % 8);
             assert_eq!(selection.pcrSelect, expected);
+
+            // The same range through the vector-taking constructor, which shares the bound
+            // check and must not have picked up a different size from it.
+            let from_vec = TPMS_PCR_SELECTION::new_from_pcrs_vec(TPM_ALG_ID::SHA256, &[pcr])?;
+            assert_eq!(from_vec.pcrSelect, expected);
         }
+
+        Ok(())
     }
 
     #[test]
-    fn pcr_selection_handles_a_pcr_beyond_the_first_three_bytes() {
+    fn pcr_selection_handles_a_pcr_beyond_the_first_three_bytes() -> Result<(), TpmError> {
         // PCR 24 is the first PCR outside the standard 0-23 range and previously panicked
         // because the growth check divided the byte index by 8 a second time.
-        let selection = TPMS_PCR_SELECTION::new_from_pcr_u32(TPM_ALG_ID::SHA256, 24);
+        let selection = TPMS_PCR_SELECTION::new_from_pcr_u32(TPM_ALG_ID::SHA256, 24)?;
 
         assert_eq!(selection.pcrSelect.len(), 4);
         assert_eq!(selection.pcrSelect, vec![0, 0, 0, 1]);
+
+        Ok(())
     }
 
     #[test]
-    fn pcr_selection_handles_a_large_pcr_value() {
-        let selection = TPMS_PCR_SELECTION::new_from_pcr_u32(TPM_ALG_ID::SHA256, 200);
+    fn pcr_selection_handles_a_large_pcr_value() -> Result<(), TpmError> {
+        let selection = TPMS_PCR_SELECTION::new_from_pcr_u32(TPM_ALG_ID::SHA256, 200)?;
 
         assert_eq!(selection.pcrSelect.len(), 26);
         assert_eq!(selection.pcrSelect[25], 1);
         assert!(selection.pcrSelect[..25].iter().all(|&b| b == 0));
+
+        Ok(())
     }
 
     #[test]
-    fn pcr_selection_sets_the_correct_bit() {
-        let selection = TPMS_PCR_SELECTION::new_from_pcr_u32(TPM_ALG_ID::SHA256, 19);
+    fn pcr_selection_sets_the_correct_bit() -> Result<(), TpmError> {
+        let selection = TPMS_PCR_SELECTION::new_from_pcr_u32(TPM_ALG_ID::SHA256, 19)?;
 
         // PCR 19 is bit 3 (0b0000_1000) of byte 2 (19 / 8 == 2, 19 % 8 == 3).
         assert_eq!(selection.pcrSelect, vec![0, 0, 0b0000_1000]);
+
+        Ok(())
+    }
+
+    /// The largest PCR the wire format can name still builds, and still marshals.
+    ///
+    /// The second half is what grounds `MAX_PCR_INDEX` in something other than a comment: the
+    /// size prefix is one byte, so 255 bytes is the most that can be written, and the marshalled
+    /// form is checked to begin with that length. Widening the bound by one PCR makes
+    /// `select_byte_index` accept an index needing 256 bytes, which `writeSizedByteBuf` refuses
+    /// -- see the test below.
+    #[test]
+    fn pcr_selection_accepts_the_largest_representable_pcr() -> Result<(), TpmError> {
+        let selection = TPMS_PCR_SELECTION::new_from_pcr_u32(
+            TPM_ALG_ID::SHA256,
+            TPMS_PCR_SELECTION::MAX_PCR_INDEX,
+        )?;
+
+        assert_eq!(
+            selection.pcrSelect.len(),
+            TPMS_PCR_SELECTION::MAX_PCR_SELECT_BYTES
+        );
+        assert_eq!(selection.pcrSelect[254], 0b1000_0000);
+        assert!(selection.pcrSelect[..254].iter().all(|&b| b == 0));
+
+        // `toBytes` fails the marshal if the buffer went out of bounds, which is how
+        // `writeSizedByteBuf` reports a payload too long for its size prefix.
+        let marshalled = selection.toBytes()?;
+
+        // hash (2 bytes) || size (1 byte) || pcrSelect
+        assert_eq!(marshalled[2], 255);
+        assert_eq!(marshalled.len(), 2 + 1 + 255);
+
+        Ok(())
+    }
+
+    /// A `pcrSelect` one byte longer than the bound allows cannot be marshalled at all.
+    ///
+    /// This is the fact `MAX_PCR_SELECT_BYTES` is derived from, checked against the generated
+    /// marshaller rather than assumed. If the generator ever moved `TPMS_PCR_SELECTION` to a
+    /// wider size prefix this test would fail, which is the signal to widen the bound.
+    #[test]
+    fn a_pcr_select_over_the_bound_does_not_marshal() {
+        let oversized = TPMS_PCR_SELECTION::new(
+            TPM_ALG_ID::SHA256,
+            &vec![0u8; TPMS_PCR_SELECTION::MAX_PCR_SELECT_BYTES + 1],
+        );
+
+        let mut buffer = TpmBuffer::new(None);
+        let _ = oversized.toTpm(&mut buffer);
+        assert!(
+            !buffer.isOk(),
+            "a 256-byte pcrSelect does not fit behind a one-byte size prefix"
+        );
+        assert!(
+            oversized.toBytes().is_err(),
+            "and the failure is reported to a caller that marshals the whole structure"
+        );
+    }
+
+    /// An out-of-range PCR is rejected before anything is allocated.
+    ///
+    /// Reverting the bound check turns this into a request for `u32::MAX / 8 + 1` bytes -- half
+    /// a gigabyte -- for a value that could never be sent. The test then fails on the `Ok` that
+    /// comes back; when this was checked by hand, the run also stopped making progress under
+    /// the memory it had asked for, which is the outcome the bound exists to prevent.
+    #[test]
+    fn pcr_selection_rejects_a_pcr_no_selection_can_name() {
+        for pcr in [
+            TPMS_PCR_SELECTION::MAX_PCR_INDEX + 1,
+            u32::MAX / 2,
+            u32::MAX,
+        ] {
+            let error = TPMS_PCR_SELECTION::new_from_pcr_u32(TPM_ALG_ID::SHA256, pcr)
+                .expect_err("a PCR the wire format cannot name must not be allocated for");
+            assert!(
+                matches!(error, TpmError::InvalidArraySize(_)),
+                "unexpected error for PCR {pcr}: {error}"
+            );
+
+            assert!(
+                TPMS_PCR_SELECTION::get_selection_array(TPM_ALG_ID::SHA256, pcr).is_err(),
+                "get_selection_array must carry the bound its element constructor applies"
+            );
+        }
+    }
+
+    /// The same bound on the vector-taking constructor, including when the out-of-range index is
+    /// not the only one and not the first.
+    ///
+    /// Reverting `new_from_pcrs_vec` to sizing from `max(pcrs)` without a check reintroduces the
+    /// same unbounded allocation, and this fails.
+    #[test]
+    fn pcr_selection_from_a_vec_rejects_a_pcr_no_selection_can_name() {
+        let error = TPMS_PCR_SELECTION::new_from_pcrs_vec(
+            TPM_ALG_ID::SHA256,
+            &[0, 7, u32::MAX, TPMS_PCR_SELECTION::MAX_PCR_INDEX],
+        )
+        .expect_err("one out-of-range PCR is enough to reject the whole selection");
+        assert!(
+            matches!(error, TpmError::InvalidArraySize(_)),
+            "unexpected error: {error}"
+        );
+
+        // The largest representable index is accepted in the same position, so the rejection
+        // above is the bound and not the shape of the input.
+        let selection = TPMS_PCR_SELECTION::new_from_pcrs_vec(
+            TPM_ALG_ID::SHA256,
+            &[0, 7, TPMS_PCR_SELECTION::MAX_PCR_INDEX],
+        )
+        .expect("the largest representable PCR is in range");
+        assert_eq!(
+            selection.pcrSelect.len(),
+            TPMS_PCR_SELECTION::MAX_PCR_SELECT_BYTES
+        );
+        assert_eq!(selection.pcrSelect[0], 0b1000_0001);
+        assert_eq!(selection.pcrSelect[254], 0b1000_0000);
     }
 }
 
@@ -1104,6 +1286,10 @@ impl TSS_KEY {
     /// The prime moves out of the [`RsaKeyParts`] the provider returned and into `privatePart`,
     /// which is wiped on drop by the [`Drop`] implementation above and withheld from `{:?}` by
     /// the [`std::fmt::Debug`] implementation above.
+    ///
+    /// Calling this twice on the same key is safe for the prime it replaces: the store goes
+    /// through [`TSS_KEY::set_private_part`], which wipes the old one before the allocation
+    /// holding it is freed.
     pub fn create_key(&mut self, crypto: &CryptoProvider) -> Result<(), TpmError> {
         let (key_bits, exponent) =
             if let Some(TPMU_PUBLIC_PARMS::rsaDetail(ref params)) = self.publicPart.parameters {
@@ -1120,15 +1306,30 @@ impl TSS_KEY {
         // them leaves nothing behind for the wipe to do, which is what is wanted here: the
         // material is moving into this key rather than being copied out of it.
 
-        // Store modulus (n) in publicPart.unique
+        // Store modulus (n) in publicPart.unique. No wipe is needed for what this replaces: the
+        // modulus is the public half of the key and is published in the Name of every object
+        // derived from it.
         self.publicPart.unique = Some(TPMU_PUBLIC_ID::rsa(TPM2B_PUBLIC_KEY_RSA {
             buffer: std::mem::take(&mut key.modulus),
         }));
 
-        // Store first prime (p) as privatePart
-        self.privatePart = std::mem::take(&mut key.prime);
+        // Store first prime (p) as privatePart.
+        self.set_private_part(std::mem::take(&mut key.prime));
 
         Ok(())
+    }
+
+    /// Store `prime` as the private half of this key, wiping the prime it replaces.
+    ///
+    /// Plain assignment would not do: it drops the previous `Vec`, and `Vec`'s own `Drop` only
+    /// frees, it does not zeroize. The [`Drop`] implementation above runs only when the whole key
+    /// goes out of scope, so calling [`TSS_KEY::create_key`] twice on the same key would leave
+    /// the first prime sitting in freed heap for whatever allocates next.
+    ///
+    /// Every write to `privatePart` in this crate goes through here.
+    pub fn set_private_part(&mut self, prime: Vec<u8>) {
+        self.privatePart.zeroize();
+        self.privatePart = prime;
     }
 
     /// Sign a digest using the software key (RSASSA-PKCS1-v1_5).
@@ -1172,6 +1373,161 @@ impl TSS_KEY {
                 sig: sig_bytes,
             })),
         })
+    }
+}
+
+/// Observes that overwriting `TSS_KEY::privatePart` wipes the prime it replaces.
+///
+/// The claim is about memory that has been freed, and freed memory cannot be read afterwards
+/// without reaching into it. It can be read at the *moment* of freeing, though: a `GlobalAlloc`
+/// is handed a still-valid pointer to the block, so the wrapper below inspects it there and
+/// records what it found before delegating to the system allocator.
+///
+/// Two things keep that read sound. Exactly one block is ever inspected — the one whose address
+/// was armed, on this thread, while it was still owned by a live `Vec`, so no other allocation
+/// can be sitting at that address — and only the bytes that `Vec` had initialized are read,
+/// never its spare capacity.
+///
+/// A watched block that is *resized* rather than dropped escapes the check, because `realloc` is
+/// forwarded to the system allocator untouched. That fails safe: the verdict stays `NOT_FREED`
+/// and the assertions below reject it.
+#[cfg(test)]
+mod private_part_wipe_tests {
+    use super::*;
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    /// The watched block was not released while it was being watched, so nothing was observed.
+    const NOT_FREED: u8 = 0;
+    /// It was released holding nothing but zeros.
+    const FREED_WIPED: u8 = 1;
+    /// It was released with its contents still in it.
+    const FREED_INTACT: u8 = 2;
+
+    thread_local! {
+        /// Address of the block to inspect when it is released, or 0 for "not watching".
+        static WATCHED_PTR: Cell<usize> = const { Cell::new(0) };
+        /// How many bytes of that block were initialized. Only these are read.
+        static WATCHED_LEN: Cell<usize> = const { Cell::new(0) };
+        static VERDICT: Cell<u8> = const { Cell::new(NOT_FREED) };
+    }
+
+    struct WatchingAllocator;
+
+    unsafe impl GlobalAlloc for WatchingAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            System.alloc(layout)
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            System.alloc_zeroed(layout)
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            System.realloc(ptr, layout, new_size)
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // `try_with` because thread-local storage may already have been torn down when a
+            // thread's last allocations are released. The cells are `const`-initialized, so
+            // reading them never allocates and this cannot re-enter the allocator.
+            let watched = WATCHED_PTR.try_with(|w| w.get()).unwrap_or(0);
+            if watched != 0 && watched == ptr as usize {
+                let len = WATCHED_LEN.try_with(|w| w.get()).unwrap_or(0);
+                let initialized = std::slice::from_raw_parts(ptr, len.min(layout.size()));
+                let verdict = if initialized.iter().all(|&byte| byte == 0) {
+                    FREED_WIPED
+                } else {
+                    FREED_INTACT
+                };
+                let _ = WATCHED_PTR.try_with(|w| w.set(0));
+                let _ = VERDICT.try_with(|v| v.set(verdict));
+            }
+            System.dealloc(ptr, layout)
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: WatchingAllocator = WatchingAllocator;
+
+    /// Start watching the block `secret` currently owns.
+    fn watch(secret: &[u8]) {
+        VERDICT.with(|v| v.set(NOT_FREED));
+        WATCHED_LEN.with(|w| w.set(secret.len()));
+        WATCHED_PTR.with(|w| w.set(secret.as_ptr() as usize));
+    }
+
+    /// Stop watching, and report what the allocator saw.
+    fn verdict() -> u8 {
+        WATCHED_PTR.with(|w| w.set(0));
+        VERDICT.with(|v| v.get())
+    }
+
+    fn assert_wiped(verdict: u8) {
+        assert_ne!(
+            verdict, NOT_FREED,
+            "the watched block was never released, so this test observed nothing at all"
+        );
+        assert_eq!(
+            verdict, FREED_WIPED,
+            "the block holding the replaced prime was released with the prime still in it"
+        );
+    }
+
+    /// Deleting the `zeroize` in [`TSS_KEY::set_private_part`] fails this: the block is then
+    /// released still holding `0xA7`, and the verdict is `FREED_INTACT`.
+    #[test]
+    fn overwriting_the_private_part_wipes_the_prime_it_replaces() {
+        let mut key = TSS_KEY {
+            publicPart: TPMT_PUBLIC::default(),
+            privatePart: vec![0xA7u8; 64],
+        };
+
+        watch(&key.privatePart);
+        key.set_private_part(vec![0x11; 64]);
+
+        assert_wiped(verdict());
+        assert_eq!(key.privatePart, vec![0x11; 64]);
+    }
+
+    /// The same property for [`TSS_KEY::create_key`], which is where the defect was reported.
+    ///
+    /// The test above would stay green if `create_key` went back to assigning to the field
+    /// directly, so this one pins that the store still goes through the wiping path. 1024 bits
+    /// because two keys are generated and the modulus size is irrelevant to what is observed.
+    #[test]
+    #[cfg(feature = "software-crypto")]
+    fn a_second_create_key_wipes_the_prime_the_first_left() -> Result<(), TpmError> {
+        use crate::crypto::software_provider::SOFTWARE_PROVIDER;
+
+        let mut key = TSS_KEY {
+            publicPart: TPMT_PUBLIC {
+                nameAlg: TPM_ALG_ID::SHA256,
+                parameters: Some(TPMU_PUBLIC_PARMS::rsaDetail(TPMS_RSA_PARMS::new(
+                    &TPMT_SYM_DEF_OBJECT::new(TPM_ALG_ID::AES, 128, TPM_ALG_ID::CFB),
+                    &Some(TPMU_ASYM_SCHEME::null(TPMS_NULL_ASYM_SCHEME::default())),
+                    1024,
+                    65537,
+                ))),
+                ..Default::default()
+            },
+            privatePart: Vec::new(),
+        };
+
+        key.create_key(&SOFTWARE_PROVIDER)?;
+        let first_prime = key.privatePart.clone();
+        assert!(!first_prime.is_empty(), "the first key produced no prime");
+
+        watch(&key.privatePart);
+        key.create_key(&SOFTWARE_PROVIDER)?;
+
+        assert_wiped(verdict());
+        assert_ne!(
+            key.privatePart, first_prime,
+            "the second call must have produced a different key for this to mean anything"
+        );
+
+        Ok(())
     }
 }
 
@@ -2080,25 +2436,58 @@ mod tests {
         assert_eq!(trusted.name(), name.as_slice());
 
         // A TPM that could not recover the credential proves nothing.
-        assert!(TrustedPublic::from_activated_credential(
-            public.clone(),
-            &name,
-            &credential,
-            &[0x5b; 20],
-            &SOFTWARE_PROVIDER
-        )
-        .is_err());
+        assert_verification_failed(
+            TrustedPublic::from_activated_credential(
+                public.clone(),
+                &name,
+                &credential,
+                &[0x5b; 20],
+                &SOFTWARE_PROVIDER,
+            )
+            .expect_err("a credential that did not come back is not evidence of anything"),
+        );
 
         // Naming one object and then trusting another's public area proves nothing either.
+        // This one arrives through `verify_name`, and it is a rejection of an untrusted public
+        // area exactly as the credential comparison above is, so it reports the same variant.
         let another_key = signing_key_public(TPMA_OBJECT::sign, vec![0x22; 256]);
-        assert!(TrustedPublic::from_activated_credential(
-            another_key,
-            &name,
-            &credential,
-            &credential,
-            &SOFTWARE_PROVIDER
-        )
-        .is_err());
+        assert_verification_failed(
+            TrustedPublic::from_activated_credential(
+                another_key,
+                &name,
+                &credential,
+                &credential,
+                &SOFTWARE_PROVIDER,
+            )
+            .expect_err("the activation named a different object than the public area supplied"),
+        );
+
+        Ok(())
+    }
+
+    /// Pins the variant a Name mismatch reports, which is what lets a caller tell an untrusted
+    /// public area from an operational failure without matching on the message.
+    ///
+    /// Reverting `verify_name` to `GenericError` fails this test and the
+    /// `from_activated_credential` case above.
+    #[test]
+    fn a_name_mismatch_is_a_verification_failure() -> Result<(), TpmError> {
+        let public = certified_key_public();
+        let name = public.get_name(&SOFTWARE_PROVIDER)?;
+
+        public.verify_name(&name, &SOFTWARE_PROVIDER)?;
+
+        let other_name =
+            signing_key_public(TPMA_OBJECT::sign, vec![0x22; 256]).get_name(&SOFTWARE_PROVIDER)?;
+        assert_verification_failed(
+            public
+                .verify_name(&other_name, &SOFTWARE_PROVIDER)
+                .expect_err("a public area that does not hash to the expected Name is untrusted"),
+        );
+        assert_verification_failed(
+            TrustedPublic::from_pinned_name(public, &other_name, &SOFTWARE_PROVIDER)
+                .expect_err("from_pinned_name rejects on the same grounds"),
+        );
 
         Ok(())
     }

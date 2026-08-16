@@ -223,6 +223,11 @@ impl Session {
         self.secret_key_material = !hmac_key.is_empty();
 
         let hash_bits = Crypto::digest_size_checked(self.hash_alg)? * 8;
+        // Wipe before overwriting. `Drop for Session` runs only when the session goes out of
+        // scope, so a key this method replaces would otherwise be dropped unwiped. Today the
+        // only caller derives into a session it has just built, so there is nothing to wipe;
+        // the wipe is here so that stays true of any later caller.
+        self.session_key.zeroize();
         self.session_key = Crypto::kdfa(
             crypto,
             self.hash_alg,
@@ -242,8 +247,14 @@ impl Session {
     }
 
     /// Set authorization value for HMAC calculation
+    ///
+    /// The value it replaces is wiped first. `sess_in.hmac` on a password session is the
+    /// caller's authorization value verbatim, and `Drop for Session` only wipes it when the
+    /// whole session goes out of scope, so a second call would otherwise leave the first auth
+    /// value in freed heap.
     pub fn set_auth_value(&mut self, auth_value: Vec<u8>) {
         if self.is_pwap() {
+            self.sess_in.hmac.zeroize();
             self.sess_in.hmac = auth_value;
         }
     }
