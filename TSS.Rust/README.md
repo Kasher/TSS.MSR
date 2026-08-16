@@ -54,7 +54,6 @@ TSS.Rust follows the same architecture as other TSS.MSR implementations:
 Key Rust crates used:
 * `rsa`, `sha1`, `sha2`, `hmac` - Cryptographic operations
 * `aes`, `cfb-mode` - Symmetric encryption for parameter encryption
-* `derivative` - Custom `Default` implementations for generated types
 * `windows` - Windows TBS API access
 
 ## See Also
