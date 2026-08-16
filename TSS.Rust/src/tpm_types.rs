@@ -9620,7 +9620,6 @@ impl TpmStructure for TPMS_CAPABILITY_DATA {
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
-        if (self.data.is_none()) { return Ok(()) };
         buf.writeInt(self.data.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         self.data.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
@@ -11731,7 +11730,6 @@ impl TpmStructure for TPMT_KEYEDHASH_SCHEME {
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
-        if (self.details.is_none()) { return Ok(()) };
         buf.writeShort(self.details.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         self.details.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
@@ -12107,7 +12105,6 @@ impl TpmStructure for TPMT_SIG_SCHEME {
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
-        if (self.details.is_none()) { return Ok(()) };
         buf.writeShort(self.details.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         self.details.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
@@ -12560,7 +12557,6 @@ impl TpmStructure for TPMT_KDF_SCHEME {
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
-        if (self.details.is_none()) { return Ok(()) };
         buf.writeShort(self.details.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         self.details.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
@@ -12662,7 +12658,6 @@ impl TpmStructure for TPMT_ASYM_SCHEME {
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
-        if (self.details.is_none()) { return Ok(()) };
         buf.writeShort(self.details.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         self.details.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
@@ -12722,7 +12717,6 @@ impl TpmStructure for TPMT_RSA_SCHEME {
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
-        if (self.details.is_none()) { return Ok(()) };
         buf.writeShort(self.details.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         self.details.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
@@ -12782,7 +12776,6 @@ impl TpmStructure for TPMT_RSA_DECRYPT {
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
-        if (self.details.is_none()) { return Ok(()) };
         buf.writeShort(self.details.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         self.details.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
@@ -13119,7 +13112,6 @@ impl TpmStructure for TPMT_ECC_SCHEME {
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
-        if (self.details.is_none()) { return Ok(()) };
         buf.writeShort(self.details.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         self.details.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
@@ -13791,7 +13783,6 @@ impl TpmStructure for TPMT_SIGNATURE {
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
-        if (self.signature.is_none()) { return Ok(()) };
         buf.writeShort(self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
@@ -13904,7 +13895,6 @@ impl TpmStructure for TPMS_KEYEDHASH_PARMS {
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
-        if (self.scheme.is_none()) { return Ok(()) };
         buf.writeShort(self.scheme.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         self.scheme.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
@@ -14237,7 +14227,6 @@ impl TpmStructure for TPMT_PUBLIC_PARMS {
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
-        if (self.parameters.is_none()) { return Ok(()) };
         buf.writeShort(self.parameters.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         self.parameters.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
@@ -14324,7 +14313,6 @@ impl TpmStructure for TPMT_PUBLIC {
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
-        if (self.parameters.is_none()) { return Ok(()) };
         buf.writeShort(self.parameters.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         buf.writeShort(self.nameAlg.into());
         buf.writeInt(self.objectAttributes.into());
@@ -22369,7 +22357,6 @@ impl TpmStructure for SignResponse {
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
-        if (self.signature.is_none()) { return Ok(()) };
         buf.writeShort(self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         self.signature.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())
@@ -27012,7 +26999,6 @@ impl TpmStructure for TPM2_TestParms_REQUEST {
     // Implement serialization/deserialization
     fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {
         // Serialize fields
-        if (self.parameters.is_none()) { return Ok(()) };
         buf.writeShort(self.parameters.as_ref().ok_or(TpmError::InvalidUnion)?.GetUnionSelector().into());
         self.parameters.as_ref().ok_or(TpmError::InvalidUnion)?.toTpm(buf)?;
         Ok(())

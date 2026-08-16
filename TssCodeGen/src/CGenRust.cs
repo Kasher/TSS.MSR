@@ -954,7 +954,7 @@ namespace CodeGen
             // To TPM implementation
             TabIn("fn serialize(&self, buf: &mut TpmBuffer) -> Result<(), TpmError> {");
             Write("// Serialize fields");
-            var toTpmOps = GetFieldsMarshalOpsRecursive(s, GetToTpmFieldsMarshalOps);
+            var toTpmOps = GetFieldsMarshalOpsRecursive(s, fields => GetToTpmFieldsMarshalOps(fields, s.SpecName));
 
             foreach (var op in toTpmOps)
             {
