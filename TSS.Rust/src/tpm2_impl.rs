@@ -2640,7 +2640,7 @@ mod tests {
             k
         };
 
-        let (mut tpm, _log) = tpm_with(vec![correct_responder(vec![0xC5; 32], |_| 0x00, key)]);
+        let (mut tpm, log) = tpm_with(vec![correct_responder(vec![0xC5; 32], |_| 0x00, key)]);
         tpm.with_session(session);
 
         tpm.Clear(&TPM_HANDLE::new(TPM_RH::LOCKOUT.get_value()))
@@ -2653,6 +2653,53 @@ mod tests {
         assert!(
             tpm.last_sessions().is_none(),
             "and it must not come back through the plural accessor either"
+        );
+
+        // And take the reuse path a caller would take, so the assertion lands on the wire and
+        // not only on the accessor: with nothing handed back there is no second command, and
+        // the device's log would record one if there were -- it logs a command before it looks
+        // for a response to it, so this holds even with no second response queued.
+        if let Some(stale) = tpm.last_session() {
+            tpm.with_session(stale);
+            let _ = tpm.Clear(&TPM_HANDLE::new(TPM_RH::LOCKOUT.get_value()));
+        }
+        let commands = log.lock().unwrap();
+        assert_eq!(
+            commands.len(),
+            1,
+            "no command may go out on a session handle the TPM has flushed"
+        );
+    }
+
+    #[test]
+    fn a_response_that_adds_an_encrypt_attribute_is_rejected() {
+        // The echo check is not only about bits going missing. A response that claims the TPM
+        // encrypted a response parameter the caller never asked it to encrypt disagrees with
+        // the request just as much, and a client that took its attributes from the response
+        // would go on to encrypt the next command's first parameter on a session the caller
+        // never nominated for it.
+        let mut session = make_session(TPM_SE::HMAC, SALT);
+        session.sess_in.sessionAttributes = TPMA_SESSION::continueSession;
+        let key = {
+            let mut k = session.session_key.clone();
+            k.extend_from_slice(LOCKOUT_AUTH);
+            k
+        };
+
+        let (mut tpm, _log) = tpm_with(vec![correct_responder(
+            vec![0xC7; 32],
+            |attrs| attrs | TPMA_SESSION::encrypt.get_value(),
+            key,
+        )]);
+        tpm.with_session(session);
+
+        let err = tpm
+            .Clear(&TPM_HANDLE::new(TPM_RH::LOCKOUT.get_value()))
+            .expect_err("an encrypt/decrypt echo that disagrees with the request is rejected");
+        assert!(
+            format!("{:?}", err).contains("echoed encrypt/decrypt attributes"),
+            "unexpected error: {:?}",
+            err
         );
     }
 
