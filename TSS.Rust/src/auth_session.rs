@@ -246,6 +246,30 @@ impl Session {
         self.sess_in.sessionHandle.handle == TPM_RH::PW.get_value()
     }
 
+    /// Whether the TPM reported this session's context as closed in the last response it
+    /// appeared in.
+    ///
+    /// `continueSession` CLEAR in a response is the TPM saying it closed the session and freed
+    /// the context when the command completed (TPM 2.0 Part 2, `TPMA_SESSION.continueSession`,
+    /// which also warns that "a session created after another session is ended may have the same
+    /// handle but logically is not the same session"). The reference implementation flushes on
+    /// exactly this condition — `SessionFlush` in `BuildResponseSession`, ms-tpm-20-ref
+    /// `SessionProcess.c` — so the handle is dead and may later belong to someone else.
+    ///
+    /// A password authorization has no context to close: the TPM SETs the attribute in the
+    /// response whatever the command asked for, and this client never reads a PWAP session's
+    /// response attributes, so one is never reported closed.
+    ///
+    /// This reflects the last response, so it is only meaningful once the session has been used;
+    /// on a session that has not been through a command it merely restates the attributes it was
+    /// constructed with.
+    pub fn is_terminated(&self) -> bool {
+        !self.is_pwap()
+            && (self.sess_out.sessionAttributes.get_value()
+                & TPMA_SESSION::continueSession.get_value())
+                == 0
+    }
+
     /// Set authorization value for HMAC calculation
     ///
     /// The value it replaces is wiped first. `sess_in.hmac` on a password session is the

@@ -812,8 +812,24 @@ impl Tpm2 {
             return Err(e);
         }
 
-        // Preserve sessions with continueSession for reuse, otherwise clear
-        self.completed_sessions = self.sessions.take();
+        // Offer the sessions back for reuse -- except any the TPM reported closed, which is
+        // what the comment here has always said and what the code did not do. A response with
+        // `continueSession` CLEAR means the TPM flushed the session when the command completed
+        // (TPM 2.0 Part 2, `TPMA_SESSION.continueSession`), whether because the caller asked for
+        // a one-shot session or because the TPM ended it. Its handle is dead and the TPM may
+        // hand the same one to an unrelated session later, so handing the session object back
+        // through `last_session()` would invite the caller to authorize a command with it.
+        // Dropping it here also wipes its session key, by `Drop for Session`.
+        self.completed_sessions = self
+            .sessions
+            .take()
+            .map(|sessions| {
+                sessions
+                    .into_iter()
+                    .filter(|session| !session.is_terminated())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|sessions| !sessions.is_empty());
         self.clear_invocation_state();
 
         Ok(true)
@@ -852,12 +868,20 @@ impl Tpm2 {
     /// Get the updated session after the last command completed.
     /// This is needed when reusing HMAC/policy sessions across commands,
     /// since the TPM updates nonces after each command.
+    ///
+    /// Sessions the TPM reported as closed (`continueSession` CLEAR in the response) are not
+    /// included: their contexts are gone, so there is nothing to reuse. That means the sessions
+    /// here do not necessarily line up one for one with the ones handed to
+    /// [`Tpm2::with_sessions`] — match on `sess_in.sessionHandle` rather than on position.
     pub fn last_sessions(&self) -> Option<&Vec<Session>> {
         self.completed_sessions.as_ref()
     }
 
     /// Get the first updated session from the last completed command.
     /// Convenience method for the common single-session case.
+    ///
+    /// `None` if the TPM closed the session, so a session that has been flushed is never handed
+    /// back for another command.
     pub fn last_session(&self) -> Option<Session> {
         self.completed_sessions
             .as_ref()
@@ -1401,6 +1425,59 @@ impl Tpm2 {
         Crypto::hash(&self.crypto, hash_alg, data_to_hash)
     }
 
+    /// The session attributes to carry into the next command on a session, given what the caller
+    /// asked for and what the TPM answered.
+    ///
+    /// This is decided bit by bit, because `TPMA_SESSION` (TPM 2.0 Part 2, §8.4) is not one
+    /// decision:
+    ///
+    /// * `encrypt` (0x40), `decrypt` (0x20) and `audit` (0x80) say how the caller intends to use
+    ///   the session, and hold until the caller says otherwise. They are kept exactly as
+    ///   requested and are never sourced from the response, which is attacker-reachable where
+    ///   the request is not: a response that cleared `encrypt`/`decrypt` would otherwise have
+    ///   this client send the next command's first parameter in the clear, and one that cleared
+    ///   `audit` would silently stop a session audit that the caller believes is running.
+    ///   Part 2 has the TPM echo all three ("in a response, the attribute is copied from the
+    ///   request", "if SET in the command, then this attribute will be SET in the response"), so
+    ///   the response is at most a confirmation; for `encrypt`/`decrypt` the caller checks it
+    ///   above and refuses to continue if it disagrees.
+    ///
+    /// * `auditReset` (0x4) and `auditExclusive` (0x2) are conditions on the single command that
+    ///   carried them, not properties of the session. `auditReset` tells the TPM to initialize
+    ///   the session's audit digest, so resending it would re-initialize that digest before
+    ///   every later command and the session audit would only ever cover the most recent one
+    ///   instead of accumulating over the session (TPM 2.0 Part 1, §21, audit; ms-tpm-20-ref
+    ///   `SessionProcess.c`, `UpdateAuditSessionStatus`, calls `InitAuditSession` whenever the
+    ///   bit is set).
+    ///   `auditExclusive` asks the TPM to run the command only if the session is exclusive at
+    ///   its start, and resending it turns a one-off precondition into a standing one that fails
+    ///   with TPM_RC_EXCLUSIVE as soon as another audited command intervenes. Both are cleared
+    ///   here.
+    ///
+    ///   They cannot be consumed by taking the response's byte instead. `auditExclusive` in a
+    ///   response is the TPM's report of whether the session *is* exclusive and is normally SET
+    ///   there, and `auditReset`, which Part 2 says "is always CLEAR in a response", is in fact
+    ///   echoed back verbatim by the reference implementation (ms-tpm-20-ref rewrites only
+    ///   `auditExclusive` before marshaling the response attributes) — that is, by the simulator
+    ///   this client is tested against. Consuming them here does not depend on either.
+    ///
+    /// * `continueSession` (0x1) is the one bit the TPM answers rather than echoes: CLEAR in a
+    ///   response means it closed the session and freed the context when the command completed.
+    ///   Keeping it SET would claim a session that no longer exists, so the response decides it.
+    ///   See also [`Session::is_terminated`], which is what keeps such a session from being
+    ///   handed back for reuse.
+    fn next_command_attributes(requested: TPMA_SESSION, returned: TPMA_SESSION) -> TPMA_SESSION {
+        let one_shot =
+            TPMA_SESSION::auditReset.get_value() | TPMA_SESSION::auditExclusive.get_value();
+        let continue_session = TPMA_SESSION::continueSession.get_value();
+
+        let mut next = requested.get_value() & !one_shot;
+        if (returned.get_value() & continue_session) == 0 {
+            next &= !continue_session;
+        }
+        TPMA_SESSION(next)
+    }
+
     /// Process response sessions
     fn process_resp_sessions(
         &mut self,
@@ -1479,6 +1556,14 @@ impl Tpm2 {
                         j, echoed_xcrypt, requested_xcrypt
                     )));
                 }
+
+                // Not every bit is the caller's to keep, though: `TPMA_SESSION` is a byte of
+                // separate decisions, and only some of them describe the session rather than the
+                // one command that has just been answered.
+                session.sess_in.sessionAttributes = Self::next_command_attributes(
+                    session.sess_in.sessionAttributes,
+                    auth_response.sessionAttributes,
+                );
 
                 // The TPM returns an authorization HMAC for every session except a password
                 // session and a policy session on which TPM2_PolicyPassword has run; for those
@@ -2345,27 +2430,116 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------------------
-    // Item 7(b): the response must not dictate the next command's session attributes.
+    // Item 7(b): which session attributes the next command inherits, and from where.
     // ---------------------------------------------------------------------------------------
 
-    #[test]
-    fn session_attributes_are_not_taken_from_the_response() {
-        // The response clears continueSession. The client must keep the attributes the caller
-        // asked for, because the response is attacker-reachable and the request is not.
-        let session = make_session(TPM_SE::HMAC, SALT);
+    /// Run two `TPM2_Clear` commands on one session, the second on whatever `last_session()`
+    /// hands back, and return the session attribute byte each command carried.
+    ///
+    /// `resp_attributes_of` is what the TPM does to the request's attribute byte on the way
+    /// back, so a test can model a TPM that echoes a bit as readily as one that rewrites it.
+    fn attributes_of_two_commands(
+        requested: TPMA_SESSION,
+        resp_attributes_of: fn(u8) -> u8,
+    ) -> (u8, u8) {
+        let mut session = make_session(TPM_SE::HMAC, SALT);
+        session.sess_in.sessionAttributes = requested;
         let key = {
             let mut k = session.session_key.clone();
             k.extend_from_slice(LOCKOUT_AUTH);
             k
         };
-        let requested = session.sess_in.sessionAttributes.get_value();
-        assert_eq!(requested, TPMA_SESSION::continueSession.get_value());
+        // `TPM2_Clear` sets lockoutAuth to the Empty Buffer, and this client follows the TPM in
+        // that (`complete_update_request_handles`), so the second command folds no authValue
+        // into its HMAC key and the key is the session key alone.
+        let key_after_clear = session.session_key.clone();
 
-        let (mut tpm, _log) = tpm_with(vec![correct_responder(vec![0xC5; 32], |_| 0x00, key)]);
+        let (mut tpm, log) = tpm_with(vec![
+            correct_responder(vec![0xD1; 32], resp_attributes_of, key),
+            correct_responder(vec![0xD2; 32], resp_attributes_of, key_after_clear),
+        ]);
+
+        tpm.with_session(session);
+        tpm.Clear(&TPM_HANDLE::new(TPM_RH::LOCKOUT.get_value()))
+            .expect("the first command should be accepted");
+
+        let reused = tpm
+            .last_session()
+            .expect("the TPM left the session open, so it should come back for reuse");
+        tpm.with_session(reused);
+        tpm.Clear(&TPM_HANDLE::new(TPM_RH::LOCKOUT.get_value()))
+            .expect("the second command should be accepted");
+
+        let commands = log.lock().unwrap();
+        assert_eq!(commands.len(), 2, "both commands should have been sent");
+        (
+            parse_clear_command_auth(&commands[0]).attributes,
+            parse_clear_command_auth(&commands[1]).attributes,
+        )
+    }
+
+    #[test]
+    fn the_per_bit_attribute_policy_keeps_what_is_the_callers_and_consumes_what_is_not() {
+        let attrs = |bits: u8| TPMA_SESSION(bits);
+        let next = |requested: u8, returned: u8| {
+            Tpm2::next_command_attributes(attrs(requested), attrs(returned)).get_value()
+        };
+
+        let continue_session = TPMA_SESSION::continueSession.get_value();
+        let audit_exclusive = TPMA_SESSION::auditExclusive.get_value();
+        let audit_reset = TPMA_SESSION::auditReset.get_value();
+        let decrypt = TPMA_SESSION::decrypt.get_value();
+        let encrypt = TPMA_SESSION::encrypt.get_value();
+        let audit = TPMA_SESSION::audit.get_value();
+
+        // How the caller means to use the session holds across commands.
+        let persistent = continue_session | decrypt | encrypt | audit;
+        assert_eq!(next(persistent, persistent), persistent);
+
+        // The one-shot bits are consumed by the command that carried them, even when the TPM
+        // hands them straight back -- which is what the reference implementation does.
+        assert_eq!(
+            next(
+                continue_session | audit | audit_reset | audit_exclusive,
+                continue_session | audit | audit_reset | audit_exclusive,
+            ),
+            continue_session | audit,
+        );
+
+        // continueSession is the TPM's answer: CLEAR means it closed the session.
+        assert_eq!(next(continue_session | encrypt, encrypt), encrypt);
+
+        // And nothing the response says can add an attribute to the next command.
+        assert_eq!(next(continue_session, 0xFF), continue_session);
+    }
+
+    #[test]
+    fn session_attributes_are_not_taken_from_the_response() {
+        // The response is attacker-reachable and the request is not, so the caller's request
+        // decides the bits that describe the session. Here the TPM answers with auditExclusive
+        // SET -- its report that the session is exclusive, which is exactly what a TPM returns
+        // for an audit session that holds exclusivity (TPM 2.0 Part 2: "in a response, it
+        // indicates that the session is exclusive"). That report must not become the next
+        // command's "execute only if exclusive" precondition.
+        let mut session = make_session(TPM_SE::HMAC, SALT);
+        session.sess_in.sessionAttributes = TPMA_SESSION::continueSession | TPMA_SESSION::audit;
+        let requested = session.sess_in.sessionAttributes.get_value();
+        let key = {
+            let mut k = session.session_key.clone();
+            k.extend_from_slice(LOCKOUT_AUTH);
+            k
+        };
+        let returned = requested | TPMA_SESSION::auditExclusive.get_value();
+
+        let (mut tpm, _log) = tpm_with(vec![correct_responder(
+            vec![0xC5; 32],
+            |attrs| attrs | TPMA_SESSION::auditExclusive.get_value(),
+            key,
+        )]);
         tpm.with_session(session);
 
         tpm.Clear(&TPM_HANDLE::new(TPM_RH::LOCKOUT.get_value()))
-            .expect("clearing continueSession in the response is legal, just not authoritative");
+            .expect("a session the TPM reports as exclusive is still a usable session");
 
         let after = tpm.last_session().expect("session should be retained");
         assert_eq!(
@@ -2375,8 +2549,110 @@ mod tests {
         );
         assert_eq!(
             after.sess_out.sessionAttributes.get_value(),
-            0x00,
+            returned,
             "what the TPM actually returned should still be observable"
+        );
+    }
+
+    #[test]
+    fn audit_reset_is_not_resent_on_the_following_command() {
+        // auditReset tells the TPM to initialize the session's audit digest. It belongs to the
+        // one command that asked for it: resending it would re-initialize the digest before
+        // every later command, so the audit would only ever cover the most recent one instead of
+        // accumulating over the session.
+        //
+        // The TPM here echoes the bit back, which is what the reference implementation does
+        // (ms-tpm-20-ref rewrites only auditExclusive before marshaling the response
+        // attributes) even though Part 2 says the bit is always CLEAR in a response. So the
+        // client cannot rely on the response to consume it, and this test would pass for the
+        // wrong reason against a TPM that did clear it.
+        let requested =
+            TPMA_SESSION::continueSession | TPMA_SESSION::audit | TPMA_SESSION::auditReset;
+
+        let (first, second) = attributes_of_two_commands(requested, echo);
+
+        assert_eq!(
+            first,
+            requested.get_value(),
+            "the first command carries what the caller asked for"
+        );
+        assert_eq!(
+            second,
+            (TPMA_SESSION::continueSession | TPMA_SESSION::audit).get_value(),
+            "auditReset is consumed by the command that carried it; audit and continueSession \
+             are the caller's and stay"
+        );
+    }
+
+    #[test]
+    fn audit_exclusive_is_not_resent_on_the_following_command() {
+        // auditExclusive asks the TPM to run this one command only if the session is exclusive
+        // at its start. Carried forward it becomes a standing precondition the caller never
+        // asked for, and one that fails with TPM_RC_EXCLUSIVE the moment another audited
+        // command intervenes. The TPM here reports the session as exclusive, i.e. it answers
+        // with the bit SET, so consuming it cannot come from the response either.
+        let requested =
+            TPMA_SESSION::continueSession | TPMA_SESSION::audit | TPMA_SESSION::auditExclusive;
+
+        let (first, second) = attributes_of_two_commands(requested, |attrs| {
+            attrs | TPMA_SESSION::auditExclusive.get_value()
+        });
+
+        assert_eq!(
+            first,
+            requested.get_value(),
+            "the first command carries what the caller asked for"
+        );
+        assert_eq!(
+            second,
+            (TPMA_SESSION::continueSession | TPMA_SESSION::audit).get_value(),
+            "auditExclusive is a condition on one command, not a property of the session"
+        );
+    }
+
+    #[test]
+    fn encrypt_and_decrypt_survive_into_the_following_command() {
+        // The counterpart to the one-shot bits: parameter encryption is a standing decision of
+        // the caller's, and consuming or dropping it would silently send the next command's
+        // first parameter in the clear.
+        let requested =
+            TPMA_SESSION::continueSession | TPMA_SESSION::encrypt | TPMA_SESSION::decrypt;
+
+        let (first, second) = attributes_of_two_commands(requested, echo);
+
+        assert_eq!(first, requested.get_value());
+        assert_eq!(
+            second,
+            requested.get_value(),
+            "encrypt/decrypt must still be set on the second command"
+        );
+    }
+
+    #[test]
+    fn a_session_the_tpm_closed_is_not_handed_back_for_reuse() {
+        // continueSession CLEAR in a response is the TPM saying it flushed the session when the
+        // command completed. The context is gone and the handle may later belong to an
+        // unrelated session, so there is nothing left to reuse and the client must not offer it.
+        let session = make_session(TPM_SE::HMAC, SALT);
+        let key = {
+            let mut k = session.session_key.clone();
+            k.extend_from_slice(LOCKOUT_AUTH);
+            k
+        };
+
+        let (mut tpm, _log) = tpm_with(vec![correct_responder(vec![0xC5; 32], |_| 0x00, key)]);
+        tpm.with_session(session);
+
+        tpm.Clear(&TPM_HANDLE::new(TPM_RH::LOCKOUT.get_value()))
+            .expect("a TPM closing the session is a well formed response, not an error");
+
+        assert!(
+            tpm.last_session().is_none(),
+            "a session the TPM flushed must not come back for another command"
+        );
+        assert!(
+            tpm.last_sessions().is_none(),
+            "and it must not come back through the plural accessor either"
         );
     }
 
