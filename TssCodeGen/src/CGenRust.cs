@@ -23,6 +23,48 @@ namespace CodeGen
             ("deserialize", "(&mut self, buffer: &mut TpmBuffer)"),
         };
 
+        // Structs that deliberately do NOT get a derived Debug, because at least one of their
+        // fields holds secret material that must never reach a log line or an error message.
+        // For each name here the generator omits Debug from the derive list and emits a
+        // compile-time assertion that the type implements Debug anyway; the redacting
+        // implementation is hand-written in TSS.Rust/src/tpm_type_extensions.rs.
+        //
+        // The decision lives in this list rather than being inferred from the AST for two
+        // reasons. Whether a field is secret is a judgement about how the TPM uses it, which the
+        // specification tables do not record. And TPM_HANDLE's secret field (auth_value) is
+        // injected from src/tpm_extensions.rs.snips, so the generator never sees it at all.
+        // Keeping the redaction hand-written also keeps the security-sensitive judgement in code
+        // a Rust reviewer reads, rather than in a code emitter they do not.
+        //
+        // Entries 3 and 4 are the two structures that carry a sensitive area in the clear;
+        // entries 5..9 are the five TPMU_SENSITIVE_COMPOSITE members. Each of those five is used
+        // nowhere else in the generated binding, so redacting them cannot hide a public value.
+        // TPM2B_ECC_PARAMETER in particular reaches Rust only as the sensitive composite's ECC
+        // member, because the type extractor flattens TPMS_ECC_POINT's public coordinates to
+        // plain byte vectors.
+        //
+        // Deliberately NOT listed, because redacting them would cost more honesty than it buys:
+        //   TPM2B_AUTH               - a type alias for TPM2B_DIGEST, so redacting it would
+        //                              redact every public digest (PCR values, Names, policies).
+        //   TPM2B_PRIVATE,
+        //   TPM2B_ENCRYPTED_SECRET,
+        //   TPM2B_ID_OBJECT          - TPM-encrypted blobs, meant to be stored and moved in the
+        //                              clear; they are not plaintext secrets.
+        //   TPMS_ECC_POINT           - public curve coordinates.
+        //   TPM2B_SENSITIVE          - holds only a TPMT_SENSITIVE, which redacts itself, so the
+        //                              derived Debug here already prints nothing secret.
+        static readonly string[] StructsWithHandWrittenDebug = new string[] {
+            "TSS_KEY",                      // privatePart: an RSA prime
+            "TPM_HANDLE",                   // auth_value: the caller's authorization value
+            "TPMT_SENSITIVE",               // authValue, seedValue and the sensitive composite
+            "TPMS_SENSITIVE_CREATE",        // userAuth and the data to be sealed
+            "TPM2B_PRIVATE_KEY_RSA",        // an RSA prime
+            "TPM2B_ECC_PARAMETER",          // an ECC private scalar
+            "TPM2B_SENSITIVE_DATA",         // sealed data or a keyedhash key
+            "TPM2B_SYM_KEY",                // a symmetric key
+            "TPM2B_PRIVATE_VENDOR_SPECIFIC" // vendor-specific private key parts
+        };
+
         // Maps enum type to a map of enumerator names to values
         Dictionary<string, Dictionary<string, string>> EnumMap;
 
@@ -124,6 +166,32 @@ namespace CodeGen
 
             // Generate the enum maps
             GenEnumMap();
+
+            GenHandWrittenDebugAssertions();
+        }
+
+        /// <summary>
+        /// Emits a compile-time requirement that every struct the generator withheld
+        /// <c>#[derive(Debug)]</c> from has a hand-written Debug somewhere in the crate.
+        ///
+        /// Without this, forgetting the implementation would only be caught if something happened
+        /// to format the type, so a secret-bearing type nobody prints yet would silently have no
+        /// Debug at all and the next caller to add a `{:?}` would get a confusing error far from
+        /// the cause. The closure body below is type-checked even though it is never run, so a
+        /// missing implementation is a hard build failure naming the offending type.
+        /// </summary>
+        void GenHandWrittenDebugAssertions()
+        {
+            WriteComment("Compile-time requirement that each type listed in CGenRust.StructsWithHandWrittenDebug " +
+                         "has the redacting Debug that was withheld from its derive list. If you added a type to " +
+                         "that list, implement Debug for it in src/tpm_type_extensions.rs; until you do, this fails " +
+                         "to build and names the type.");
+            TabIn("const _: fn() = || {");
+            Write("fn assert_debug<T: fmt::Debug + ?Sized>() {}");
+            foreach (var typeName in StructsWithHandWrittenDebug)
+                Write($"assert_debug::<{typeName}>();");
+            TabOut("};");
+            Write("");
         }
 
         /// <summary>
@@ -452,7 +520,18 @@ namespace CodeGen
             }
 
             WriteComment(s);
-            Write($"#[derive(Debug, Clone, Derivative)]");
+            if (StructsWithHandWrittenDebug.Contains(structName))
+            {
+                Write("///");
+                Write("/// Holds secret material, so `Debug` is deliberately not derived here. The redacting");
+                Write("/// implementation is hand-written in `src/tpm_type_extensions.rs`; omitting it is a compile");
+                Write("/// error, enforced by the assertion at the end of this file.");
+                Write($"#[derive(Clone, Derivative)]");
+            }
+            else
+            {
+                Write($"#[derive(Debug, Clone, Derivative)]");
+            }
             Write("#[derivative(Default)]");
             Write($"pub struct {structName} {{");
             TabIn();

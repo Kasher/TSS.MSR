@@ -7541,7 +7541,11 @@ impl TpmMarshaller for TPMU_SENSITIVE_COMPOSITE {
 }
 
 /// Handle of a loaded TPM key or other object [TSS]
-#[derive(Debug, Clone, Derivative)]
+///
+/// Holds secret material, so `Debug` is deliberately not derived here. The redacting
+/// implementation is hand-written in `src/tpm_type_extensions.rs`; omitting it is a compile
+/// error, enforced by the assertion at the end of this file.
+#[derive(Clone, Derivative)]
 #[derivative(Default)]
 pub struct TPM_HANDLE {
     /// Handle value
@@ -10996,7 +11000,11 @@ impl TpmMarshaller for TPMT_SYM_DEF_OBJECT {
 }
 
 /// This structure is used to hold a symmetric key in the sensitive area of an asymmetric object.
-#[derive(Debug, Clone, Derivative)]
+///
+/// Holds secret material, so `Debug` is deliberately not derived here. The redacting
+/// implementation is hand-written in `src/tpm_type_extensions.rs`; omitting it is a compile
+/// error, enforced by the assertion at the end of this file.
+#[derive(Clone, Derivative)]
 #[derivative(Default)]
 pub struct TPM2B_SYM_KEY {
     /// The key
@@ -11263,7 +11271,11 @@ impl TpmMarshaller for TPM2B_DERIVE {
 }
 
 /// This buffer wraps the TPMU_SENSITIVE_CREATE structure.
-#[derive(Debug, Clone, Derivative)]
+///
+/// Holds secret material, so `Debug` is deliberately not derived here. The redacting
+/// implementation is hand-written in `src/tpm_type_extensions.rs`; omitting it is a compile
+/// error, enforced by the assertion at the end of this file.
+#[derive(Clone, Derivative)]
 #[derivative(Default)]
 pub struct TPM2B_SENSITIVE_DATA {
     /// Symmetric data for a created object or the label and context for a derived object
@@ -11317,7 +11329,11 @@ impl TpmMarshaller for TPM2B_SENSITIVE_DATA {
 
 /// This structure defines the values to be placed in the sensitive area of a created
 /// object. This structure is only used within a TPM2B_SENSITIVE_CREATE structure.
-#[derive(Debug, Clone, Derivative)]
+///
+/// Holds secret material, so `Debug` is deliberately not derived here. The redacting
+/// implementation is hand-written in `src/tpm_type_extensions.rs`; omitting it is a compile
+/// error, enforced by the assertion at the end of this file.
+#[derive(Clone, Derivative)]
 #[derivative(Default)]
 pub struct TPMS_SENSITIVE_CREATE {
     /// The USER auth secret value
@@ -12849,7 +12865,11 @@ impl TpmMarshaller for TPM2B_PUBLIC_KEY_RSA {
 }
 
 /// This sized buffer holds the largest RSA prime number supported by the TPM.
-#[derive(Debug, Clone, Derivative)]
+///
+/// Holds secret material, so `Debug` is deliberately not derived here. The redacting
+/// implementation is hand-written in `src/tpm_type_extensions.rs`; omitting it is a compile
+/// error, enforced by the assertion at the end of this file.
+#[derive(Clone, Derivative)]
 #[derivative(Default)]
 pub struct TPM2B_PRIVATE_KEY_RSA {
     pub buffer: Vec<u8>,
@@ -12901,7 +12921,11 @@ impl TpmMarshaller for TPM2B_PRIVATE_KEY_RSA {
 }
 
 /// This sized buffer holds the largest ECC parameter (coordinate) supported by the TPM.
-#[derive(Debug, Clone, Derivative)]
+///
+/// Holds secret material, so `Debug` is deliberately not derived here. The redacting
+/// implementation is hand-written in `src/tpm_type_extensions.rs`; omitting it is a compile
+/// error, enforced by the assertion at the end of this file.
+#[derive(Clone, Derivative)]
 #[derivative(Default)]
 pub struct TPM2B_ECC_PARAMETER {
     /// The parameter data
@@ -14447,7 +14471,11 @@ impl TpmMarshaller for TPM2B_TEMPLATE {
 /// values will be computed so that computations using the private key will not need to
 /// start with just one prime factor. This structure can be used to store the results of
 /// such vendor-specific calculations.
-#[derive(Debug, Clone, Derivative)]
+///
+/// Holds secret material, so `Debug` is deliberately not derived here. The redacting
+/// implementation is hand-written in `src/tpm_type_extensions.rs`; omitting it is a compile
+/// error, enforced by the assertion at the end of this file.
+#[derive(Clone, Derivative)]
 #[derivative(Default)]
 pub struct TPM2B_PRIVATE_VENDOR_SPECIFIC {
     pub buffer: Vec<u8>,
@@ -14500,7 +14528,11 @@ impl TpmMarshaller for TPM2B_PRIVATE_VENDOR_SPECIFIC {
 
 /// AuthValue shall not be larger than the size of the digest produced by the nameAlg of
 /// the object. seedValue shall be the size of the digest produced by the nameAlg of the object.
-#[derive(Debug, Clone, Derivative)]
+///
+/// Holds secret material, so `Debug` is deliberately not derived here. The redacting
+/// implementation is hand-written in `src/tpm_type_extensions.rs`; omitting it is a compile
+/// error, enforced by the assertion at the end of this file.
+#[derive(Clone, Derivative)]
 #[derivative(Default)]
 pub struct TPMT_SENSITIVE {
     /// Identifier for the sensitive area
@@ -29185,7 +29217,11 @@ impl TpmMarshaller for CommandHeader {
 }
 
 /// Contains the public and private part of a TPM key
-#[derive(Debug, Clone, Derivative)]
+///
+/// Holds secret material, so `Debug` is deliberately not derived here. The redacting
+/// implementation is hand-written in `src/tpm_type_extensions.rs`; omitting it is a compile
+/// error, enforced by the assertion at the end of this file.
+#[derive(Clone, Derivative)]
 #[derivative(Default)]
 pub struct TSS_KEY {
     /// Public part of key
@@ -31153,4 +31189,21 @@ lazy_static::lazy_static! {
     };
 
 }
+
+/// Compile-time requirement that each type listed in CGenRust.StructsWithHandWrittenDebug
+/// has the redacting Debug that was withheld from its derive list. If you added a type to
+/// that list, implement Debug for it in src/tpm_type_extensions.rs; until you do, this
+/// fails to build and names the type.
+const _: fn() = || {
+    fn assert_debug<T: fmt::Debug + ?Sized>() {}
+    assert_debug::<TSS_KEY>();
+    assert_debug::<TPM_HANDLE>();
+    assert_debug::<TPMT_SENSITIVE>();
+    assert_debug::<TPMS_SENSITIVE_CREATE>();
+    assert_debug::<TPM2B_PRIVATE_KEY_RSA>();
+    assert_debug::<TPM2B_ECC_PARAMETER>();
+    assert_debug::<TPM2B_SENSITIVE_DATA>();
+    assert_debug::<TPM2B_SYM_KEY>();
+    assert_debug::<TPM2B_PRIVATE_VENDOR_SPECIFIC>();
+};
 
